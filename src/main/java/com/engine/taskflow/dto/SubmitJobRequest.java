@@ -15,4 +15,5 @@ public class SubmitJobRequest {
 
     private String taskType;
     private String payload;
+    private Long delayInSeconds;
 }

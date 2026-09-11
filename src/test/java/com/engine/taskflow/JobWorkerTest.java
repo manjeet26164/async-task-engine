@@ -154,4 +154,21 @@ public class JobWorkerTest {
         verify(jobRepository, never()).save(any(JobRecord.class));
         verifyNoInteractions(stringRedisTemplate);
     }
+
+    @Test
+    void shouldExecuteLuaScriptOnPollDelayedJobs() {
+        when(stringRedisTemplate.execute(
+                any(org.springframework.data.redis.core.script.RedisScript.class),
+                any(List.class),
+                any(String.class)
+        )).thenReturn(3L);
+
+        jobWorker.pollDelayedJobs();
+
+        verify(stringRedisTemplate).execute(
+                any(org.springframework.data.redis.core.script.RedisScript.class),
+                eq(List.of(JobWorker.DELAYED_QUEUE_KEY, JobWorker.ACTIVE_QUEUE_KEY)),
+                any(String.class)
+        );
+    }
 }

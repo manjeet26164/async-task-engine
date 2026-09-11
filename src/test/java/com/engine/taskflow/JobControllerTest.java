@@ -101,4 +101,42 @@ public class JobControllerTest {
                 mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/jobs/" + jobId))
                                 .andExpect(status().isNotFound());
         }
+
+        @Test
+        void shouldReturnAcceptedWhenDelayedJobIsSubmitted() throws Exception {
+                String idempotencyKey = "key-delayed-1";
+                SubmitJobRequest request = SubmitJobRequest.builder()
+                                .taskType("DATA_SYNC")
+                                .payload("{\"target\":\"db\"}")
+                                .delayInSeconds(10L)
+                                .build();
+
+                when(taskService.scheduleDelayedJob(eq(idempotencyKey), eq("DATA_SYNC"), eq(request.getPayload()), eq(10L)))
+                                .thenReturn("job-delayed-xyz");
+
+                mockMvc.perform(post("/api/v1/jobs/submit")
+                                .header("Idempotency-Key", idempotencyKey)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(objectMapper.writeValueAsString(request)))
+                                .andExpect(status().isAccepted())
+                                .andExpect(jsonPath("$.jobId").value("job-delayed-xyz"))
+                                .andExpect(jsonPath("$.status").value("SCHEDULED"))
+                                .andExpect(jsonPath("$.message").value("Job scheduled with 10s delay"));
+        }
+
+        @Test
+        void shouldReturnRecentJobsList() throws Exception {
+                com.engine.taskflow.model.JobRecord r1 = com.engine.taskflow.model.JobRecord.builder()
+                                .id("job-r1")
+                                .taskType("SEND_EMAIL")
+                                .status("COMPLETED")
+                                .build();
+
+                when(taskService.getRecentJobs()).thenReturn(java.util.List.of(r1));
+
+                mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/jobs/recent"))
+                                .andExpect(status().isOk())
+                                .andExpect(jsonPath("$[0].id").value("job-r1"))
+                                .andExpect(jsonPath("$[0].status").value("COMPLETED"));
+        }
 }

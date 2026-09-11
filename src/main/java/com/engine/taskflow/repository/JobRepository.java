@@ -13,4 +13,8 @@ public interface JobRepository extends JpaRepository<JobRecord, String> {
     Optional<JobRecord> findByIdempotencyKey(String idempotencyKey);
 
     List<JobRecord> findByStatus(String status);
+
+    long countByStatus(String status);
+
+    List<JobRecord> findTop20ByOrderByCreatedAtDesc();
 }

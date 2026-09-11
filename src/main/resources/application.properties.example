@@ -1,0 +1,26 @@
+# ==============================================================================
+# TaskFlow Engine - Configuration Template (Safe for Version Control)
+# Copy this file to application.properties or application-local.properties
+# ==============================================================================
+
+spring.application.name=distributed-task-engine
+
+# PostgreSQL Configuration
+spring.datasource.url=${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/taskdb}
+spring.datasource.username=${SPRING_DATASOURCE_USERNAME:postgres}
+spring.datasource.password=${SPRING_DATASOURCE_PASSWORD:password}
+spring.datasource.driver-class-name=org.postgresql.Driver
+spring.datasource.hikari.connection-timeout=30000
+spring.datasource.hikari.maximum-pool-size=10
+
+# JPA / Hibernate Configuration
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=false
+spring.jpa.open-in-view=false
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+
+# Redis Configuration (Local or Upstash Cloud)
+spring.data.redis.host=${SPRING_REDIS_HOST:localhost}
+spring.data.redis.port=${SPRING_REDIS_PORT:6379}
+spring.data.redis.password=${SPRING_REDIS_PASSWORD:}
+spring.data.redis.ssl.enabled=${SPRING_REDIS_SSL:false}

@@ -7,8 +7,12 @@ import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -20,7 +24,20 @@ public class JobWorker {
 
     public static final String ACTIVE_QUEUE_KEY = "jobs:queue:active";
     public static final String DLQ_KEY = "jobs:queue:dlq";
+    public static final String DELAYED_QUEUE_KEY = "jobs:queue:delayed";
     private static final long POLL_TIMEOUT_SECONDS = 2L;
+
+    private static final String MOVE_DELAYED_JOBS_LUA =
+            "local jobs = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, 100)\n" +
+            "if #jobs > 0 then\n" +
+            "    for _, jobId in ipairs(jobs) do\n" +
+            "        redis.call('LPUSH', KEYS[2], jobId)\n" +
+            "        redis.call('ZREM', KEYS[1], jobId)\n" +
+            "    end\n" +
+            "end\n" +
+            "return #jobs";
+
+    private final RedisScript<Long> moveDelayedScript = new DefaultRedisScript<>(MOVE_DELAYED_JOBS_LUA, Long.class);
 
     private final StringRedisTemplate stringRedisTemplate;
     private final JobRepository jobRepository;
@@ -35,6 +52,23 @@ public class JobWorker {
         this.stringRedisTemplate = stringRedisTemplate;
         this.jobRepository = jobRepository;
         this.workerThreadPool = workerThreadPool;
+    }
+
+    @Scheduled(fixedRate = 500)
+    public void pollDelayedJobs() {
+        try {
+            long now = System.currentTimeMillis();
+            Long movedCount = stringRedisTemplate.execute(
+                    moveDelayedScript,
+                    List.of(DELAYED_QUEUE_KEY, ACTIVE_QUEUE_KEY),
+                    String.valueOf(now)
+            );
+            if (movedCount != null && movedCount > 0) {
+                log.info("Promoted {} mature delayed jobs from {} to {}", movedCount, DELAYED_QUEUE_KEY, ACTIVE_QUEUE_KEY);
+            }
+        } catch (Exception e) {
+            log.error("Error promoting delayed jobs from Redis: {}", e.getMessage(), e);
+        }
     }
 
     @PostConstruct

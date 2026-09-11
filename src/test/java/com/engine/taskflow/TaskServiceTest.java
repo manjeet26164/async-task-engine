@@ -104,4 +104,45 @@ public class TaskServiceTest {
         assertEquals("QUEUED", result.get().getStatus());
         verify(jobRepository).findById(jobId);
     }
+
+    @Test
+    void shouldSuccessfullyScheduleDelayedJob() {
+        String idempotencyKey = "delayed-key-1";
+        String taskType = "DATA_SYNC";
+        String payload = "{\"batch\":100}";
+        long delaySeconds = 15L;
+
+        org.springframework.data.redis.core.ZSetOperations<String, String> zsetOps = org.mockito.Mockito.mock(org.springframework.data.redis.core.ZSetOperations.class);
+        when(stringRedisTemplate.opsForZSet()).thenReturn(zsetOps);
+        when(valueOperations.setIfAbsent(eq("idemp:" + idempotencyKey), eq("LOCKED"), any(Duration.class)))
+                .thenReturn(true);
+
+        JobRecord savedRecord = JobRecord.builder()
+                .id("generated-delayed-id")
+                .idempotencyKey(idempotencyKey)
+                .taskType(taskType)
+                .payload(payload)
+                .status("SCHEDULED")
+                .build();
+
+        when(jobRepository.save(any(JobRecord.class))).thenReturn(savedRecord);
+
+        String resultJobId = taskService.scheduleDelayedJob(idempotencyKey, taskType, payload, delaySeconds);
+
+        assertEquals("generated-delayed-id", resultJobId);
+        verify(jobRepository).save(any(JobRecord.class));
+        verify(zsetOps).add(eq("jobs:queue:delayed"), eq("generated-delayed-id"), any(Double.class));
+    }
+
+    @Test
+    void shouldReturnRecentJobsList() {
+        JobRecord r1 = JobRecord.builder().id("job-1").status("COMPLETED").build();
+        when(jobRepository.findTop20ByOrderByCreatedAtDesc()).thenReturn(java.util.List.of(r1));
+
+        java.util.List<JobRecord> recent = taskService.getRecentJobs();
+
+        assertEquals(1, recent.size());
+        assertEquals("job-1", recent.get(0).getId());
+        verify(jobRepository).findTop20ByOrderByCreatedAtDesc();
+    }
 }

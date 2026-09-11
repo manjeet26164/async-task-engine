@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TaskFlow | Distributed Task Engine Dashboard</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Google Fonts: Inter & JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace']
+                    },
+                    colors: {
+                        brand: {
+                            50: '#eef2ff',
+                            100: '#e0e7ff',
+                            500: '#6366f1',
+                            600: '#4f46e5',
+                            700: '#4338ca',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.75);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .glass-card {
+            background: rgba(30, 41, 59, 0.6);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        .pulse-indicator {
+            animation: pulse-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse-glow {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: .5; transform: scale(0.96); }
+        }
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f172a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #475569;
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans min-h-screen flex flex-col antialiased selection:bg-brand-500 selection:text-white">
+
+    <!-- Top Navigation Bar -->
+    <header class="sticky top-0 z-50 glass-panel border-b border-slate-800/80 px-6 py-3.5 flex items-center justify-between">
+        <div class="flex items-center space-x-3">
+            <div class="h-9 w-9 rounded-xl bg-gradient-to-tr from-brand-600 to-cyan-400 flex items-center justify-center shadow-lg shadow-brand-500/20">
+                <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+            </div>
+            <div>
+                <div class="flex items-center space-x-2">
+                    <h1 class="text-lg font-bold tracking-tight text-white">TaskFlow Engine</h1>
+                    <span class="px-2 py-0.5 text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full flex items-center gap-1">
+                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 pulse-indicator"></span> Cluster Active
+                    </span>
+                </div>
+                <p class="text-xs text-slate-400">Distributed Task Engine & Resilient Worker Telemetry</p>
+            </div>
+        </div>
+
+        <div class="flex items-center space-x-4">
+            <div class="hidden sm:flex items-center text-xs text-slate-400 space-x-3 bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-800">
+                <span>Redis: <strong class="text-emerald-400 font-mono">Port 6379</strong></span>
+                <span class="text-slate-600">•</span>
+                <span>Postgres: <strong class="text-cyan-400 font-mono">Port 5432</strong></span>
+                <span class="text-slate-600">•</span>
+                <span>Backpressure: <strong class="text-amber-400 font-mono">CallerRuns</strong></span>
+            </div>
+            <button id="refreshBtn" onclick="fetchMetrics(); fetchRecentJobs();" class="p-2 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition border border-slate-700/60" title="Manual Refresh">
+                <svg id="refreshIcon" class="w-4 h-4 transition-transform duration-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
+
+        <!-- 4 Core Stat Cards -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+
+            <!-- Card 1: Queued in Redis -->
+            <div class="glass-card rounded-2xl p-5 relative overflow-hidden group hover:border-amber-500/30 transition-all duration-300 shadow-lg">
+                <div class="absolute -right-6 -bottom-6 w-24 h-24 bg-amber-500/10 rounded-full blur-xl group-hover:bg-amber-500/20 transition-all"></div>
+                <div class="flex items-center justify-between">
+                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Active Queue</span>
+                    <div class="p-2 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
+                        </svg>
+                    </div>
+                </div>
+                <div class="mt-4 flex items-baseline justify-between">
+                    <div class="text-3xl font-extrabold text-white font-mono" id="statActiveQueue">0</div>
+                    <span id="statDelayedQueueBadge" class="text-xs font-medium px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
+                        Delayed: <span id="statDelayedQueue" class="text-cyan-400 font-mono">0</span>
+                    </span>
+                </div>
+                <div class="mt-2 text-xs text-slate-400 flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                    Redis List: <code class="text-slate-300 font-mono">jobs:queue:active</code>
+                </div>
+            </div>
+
+            <!-- Card 2: Active Threads -->
+            <div class="glass-card rounded-2xl p-5 relative overflow-hidden group hover:border-brand-500/30 transition-all duration-300 shadow-lg">
+                <div class="absolute -right-6 -bottom-6 w-24 h-24 bg-brand-500/10 rounded-full blur-xl group-hover:bg-brand-500/20 transition-all"></div>
+                <div class="flex items-center justify-between">
+                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Worker Threads</span>
+                    <div class="p-2 rounded-xl bg-brand-500/10 text-brand-400 border border-brand-500/20">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"/>
+                        </svg>
+                    </div>
+                </div>
+                <div class="mt-4 flex items-baseline justify-between">
+                    <div class="text-3xl font-extrabold text-white font-mono">
+                        <span id="statActiveThreads">0</span>
+                        <span class="text-sm font-normal text-slate-400">/ <span id="statPoolSize">0</span></span>
+                    </div>
+                    <span class="text-xs font-medium px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
+                        Q Cap: <span id="statQueueCapacity" class="text-brand-400 font-mono">100</span>
+                    </span>
+                </div>
+                <div class="mt-2 text-xs text-slate-400 flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full bg-brand-400"></span>
+                    Pool Bounds: <span id="statCoreMax" class="text-slate-300 font-mono">4 core / 8 max</span>
+                </div>
+            </div>
+
+            <!-- Card 3: Completed Jobs -->
+            <div class="glass-card rounded-2xl p-5 relative overflow-hidden group hover:border-emerald-500/30 transition-all duration-300 shadow-lg">
+                <div class="absolute -right-6 -bottom-6 w-24 h-24 bg-emerald-500/10 rounded-full blur-xl group-hover:bg-emerald-500/20 transition-all"></div>
+                <div class="flex items-center justify-between">
+                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Completed Jobs</span>
+                    <div class="p-2 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                    </div>
+                </div>
+                <div class="mt-4 flex items-baseline justify-between">
+                    <div class="text-3xl font-extrabold text-emerald-400 font-mono" id="statCompleted">0</div>
+                    <span class="text-xs font-semibold px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                        Postgres Synced
+                    </span>
+                </div>
+                <div class="mt-2 text-xs text-slate-400 flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                    Status: <code class="text-slate-300 font-mono">COMPLETED</code>
+                </div>
+            </div>
+
+            <!-- Card 4: Dead Letter Queue (DLQ) -->
+            <div class="glass-card rounded-2xl p-5 relative overflow-hidden group hover:border-rose-500/30 transition-all duration-300 shadow-lg">
+                <div class="absolute -right-6 -bottom-6 w-24 h-24 bg-rose-500/10 rounded-full blur-xl group-hover:bg-rose-500/20 transition-all"></div>
+                <div class="flex items-center justify-between">
+                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Dead Letter Queue</span>
+                    <div class="p-2 rounded-xl bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                    </div>
+                </div>
+                <div class="mt-4 flex items-baseline justify-between">
+                    <div class="text-3xl font-extrabold text-rose-400 font-mono" id="statDlq">0</div>
+                    <span class="text-xs font-medium px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
+                        DB Failed: <span id="statFailed" class="text-rose-400 font-mono">0</span>
+                    </span>
+                </div>
+                <div class="mt-2 text-xs text-slate-400 flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
+                    Redis List: <code class="text-slate-300 font-mono">jobs:queue:dlq</code>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Middle Row: Chart & Job Submission Form -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+            <!-- Real-Time Metrics Chart (7 cols) -->
+            <div class="lg:col-span-7 glass-panel rounded-2xl p-5 flex flex-col justify-between shadow-xl">
+                <div class="flex items-center justify-between mb-4">
+                    <div>
+                        <h2 class="text-base font-bold text-white flex items-center gap-2">
+                            <span>Real-Time Engine Telemetry</span>
+                            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                        </h2>
+                        <p class="text-xs text-slate-400">Live 1-second sampling of Redis queue depth and thread pool activity</p>
+                    </div>
+                    <div class="flex items-center gap-2 text-xs">
+                        <span class="inline-flex items-center gap-1 text-amber-400"><span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span> Active Q</span>
+                        <span class="inline-flex items-center gap-1 text-cyan-400"><span class="w-2.5 h-2.5 rounded-full bg-cyan-400"></span> Delayed</span>
+                        <span class="inline-flex items-center gap-1 text-indigo-400"><span class="w-2.5 h-2.5 rounded-full bg-indigo-400"></span> Threads</span>
+                        <span class="inline-flex items-center gap-1 text-rose-400"><span class="w-2.5 h-2.5 rounded-full bg-rose-400"></span> DLQ</span>
+                    </div>
+                </div>
+
+                <div class="relative w-full h-72 sm:h-80">
+                    <canvas id="telemetryChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Job Ingestion & Scheduling Form (5 cols) -->
+            <div class="lg:col-span-5 glass-panel rounded-2xl p-5 shadow-xl flex flex-col justify-between">
+                <div>
+                    <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+                        <div>
+                            <h2 class="text-base font-bold text-white">Ingest / Schedule Task</h2>
+                            <p class="text-xs text-slate-400">Submit immediate or delayed jobs into the distributed pipeline</p>
+                        </div>
+                        <span class="px-2 py-0.5 text-xs font-mono font-medium bg-brand-500/10 text-brand-400 border border-brand-500/20 rounded-lg">
+                            POST /submit
+                        </span>
+                    </div>
+
+                    <!-- Quick Preset Templates -->
+                    <div class="mt-4">
+                        <label class="block text-xs font-semibold text-slate-400 mb-1.5 uppercase tracking-wider">Quick Presets</label>
+                        <div class="grid grid-cols-2 gap-2 text-xs">
+                            <button type="button" onclick="loadPreset('IMAGE_PROCESSING')" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-left transition flex items-center gap-1.5">
+                                <span>🖼️</span> Image Processing
+                            </button>
+                            <button type="button" onclick="loadPreset('SEND_EMAIL')" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-left transition flex items-center gap-1.5">
+                                <span>✉️</span> Send Email
+                            </button>
+                            <button type="button" onclick="loadPreset('FAIL_TEST')" class="px-2.5 py-1.5 rounded-lg bg-rose-900/30 hover:bg-rose-900/50 text-rose-300 border border-rose-700/50 text-left transition flex items-center gap-1.5">
+                                <span>💥</span> Simulate Failure (DLQ)
+                            </button>
+                            <button type="button" onclick="loadPreset('DELAYED_10S')" class="px-2.5 py-1.5 rounded-lg bg-cyan-900/30 hover:bg-cyan-900/50 text-cyan-300 border border-cyan-700/50 text-left transition flex items-center gap-1.5">
+                                <span>⏱️</span> 10s Delayed Job
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Form Inputs -->
+                    <form id="jobForm" onsubmit="submitJob(event)" class="mt-4 space-y-3">
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="block text-xs font-medium text-slate-400 mb-1">Task Type</label>
+                                <input type="text" id="formTaskType" required placeholder="e.g. IMAGE_PROCESSING" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 font-mono">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-slate-400 mb-1">Delay (seconds)</label>
+                                <input type="number" id="formDelay" min="0" max="86400" value="0" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 font-mono">
+                            </div>
+                        </div>
+
+                        <div>
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-xs font-medium text-slate-400">Idempotency-Key</label>
+                                <button type="button" onclick="generateNewKey()" class="text-xs text-brand-400 hover:text-brand-300 transition">Regenerate</button>
+                            </div>
+                            <input type="text" id="formIdempKey" required class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-brand-500">
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-medium text-slate-400 mb-1">JSON Payload</label>
+                            <textarea id="formPayload" rows="3" required class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-xs text-white font-mono focus:outline-none focus:border-brand-500 resize-none"></textarea>
+                        </div>
+
+                        <button type="submit" id="submitJobBtn" class="w-full py-2.5 rounded-xl bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 text-white font-semibold text-xs transition shadow-lg shadow-brand-500/25 flex items-center justify-center gap-2">
+                            <span>Submit to Engine</span>
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+                            </svg>
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Bottom Row: Recent Jobs Table -->
+        <div class="glass-panel rounded-2xl p-5 shadow-xl">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-800 gap-2">
+                <div>
+                    <h2 class="text-base font-bold text-white flex items-center gap-2">
+                        <span>Recent Jobs Pipeline</span>
+                        <span id="jobsCountBadge" class="px-2 py-0.5 text-xs font-mono bg-slate-800 text-slate-300 rounded-full border border-slate-700">0 jobs</span>
+                    </h2>
+                    <p class="text-xs text-slate-400">Live log of recent task ingestion, state transitions, and retry executions</p>
+                </div>
+                <div class="flex items-center space-x-3 text-xs">
+                    <label class="flex items-center space-x-1.5 cursor-pointer text-slate-400 hover:text-slate-200">
+                        <input type="checkbox" id="autoRefreshToggle" checked class="rounded bg-slate-800 border-slate-700 text-brand-500 focus:ring-0">
+                        <span>Auto-refresh (2s)</span>
+                    </label>
+                    <button onclick="fetchRecentJobs()" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">
+                        Refresh Table
+                    </button>
+                </div>
+            </div>
+
+            <div class="overflow-x-auto mt-4">
+                <table class="w-full text-left text-xs text-slate-300">
+                    <thead class="text-slate-400 uppercase bg-slate-900/60 text-[11px] font-semibold border-b border-slate-800">
+                        <tr>
+                            <th class="px-3.5 py-2.5 rounded-l-lg">Job ID</th>
+                            <th class="px-3.5 py-2.5">Task Type</th>
+                            <th class="px-3.5 py-2.5">Status</th>
+                            <th class="px-3.5 py-2.5">Retries</th>
+                            <th class="px-3.5 py-2.5">Idempotency Key</th>
+                            <th class="px-3.5 py-2.5">Created At</th>
+                            <th class="px-3.5 py-2.5 rounded-r-lg text-right">Payload</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recentJobsTableBody" class="divide-y divide-slate-800/60 font-mono">
+                        <tr>
+                            <td colspan="7" class="px-4 py-8 text-center text-slate-500">Loading recent tasks...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="fixed bottom-5 right-5 z-50 transform translate-y-24 opacity-0 transition-all duration-300 max-w-md w-full glass-panel border rounded-xl p-4 shadow-2xl flex items-start gap-3">
+        <div id="toastIcon" class="p-1.5 rounded-lg shrink-0"></div>
+        <div class="flex-1 min-w-0">
+            <h4 id="toastTitle" class="text-xs font-bold text-white"></h4>
+            <p id="toastMessage" class="text-xs text-slate-300 mt-0.5 truncate"></p>
+        </div>
+        <button onclick="hideToast()" class="text-slate-400 hover:text-white">&times;</button>
+    </div>
+
+    <!-- Payload Inspect Modal -->
+    <div id="inspectModal" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm hidden flex items-center justify-center p-4">
+        <div class="glass-panel rounded-2xl max-w-lg w-full p-5 border border-slate-700 shadow-2xl space-y-3">
+            <div class="flex items-center justify-between pb-2 border-b border-slate-800">
+                <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                    <span>Task Payload Inspector</span>
+                </h3>
+                <button onclick="closeModal()" class="text-slate-400 hover:text-white text-lg">&times;</button>
+            </div>
+            <div>
+                <p class="text-xs text-slate-400 mb-1">Job ID: <span id="modalJobId" class="font-mono text-cyan-400"></span></p>
+                <pre id="modalPayloadContent" class="bg-slate-900 border border-slate-800 rounded-xl p-3 text-xs font-mono text-emerald-400 max-h-60 overflow-y-auto"></pre>
+            </div>
+            <div class="text-right">
+                <button onclick="closeModal()" class="px-4 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-white transition">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Script -->
+    <script>
+        // Preset configurations
+        const presets = {
+            IMAGE_PROCESSING: {
+                taskType: 'IMAGE_PROCESSING',
+                delay: 0,
+                payload: JSON.stringify({ fileUrl: 'https://cdn.example.com/images/sample-2026.png', targetWidth: 1920, targetHeight: 1080, format: 'WEBP' }, null, 2)
+            },
+            SEND_EMAIL: {
+                taskType: 'SEND_EMAIL',
+                delay: 0,
+                payload: JSON.stringify({ to: 'developer@example.com', subject: 'TaskFlow Execution Report', templateId: 'tpl_success_v2' }, null, 2)
+            },
+            FAIL_TEST: {
+                taskType: 'PAYMENT_GATEWAY',
+                delay: 0,
+                payload: JSON.stringify({ action: 'process_refund', fail: true, reason: 'network_timeout_simulated' }, null, 2)
+            },
+            DELAYED_10S: {
+                taskType: 'DATA_SYNC',
+                delay: 10,
+                payload: JSON.stringify({ syncTarget: 'analytics_warehouse', batchSize: 500, scheduledDelay: '10s' }, null, 2)
+            }
+        };
+
+        function generateUUID() {
+            return 'key-' + Math.random().toString(36).substring(2, 9) + '-' + Date.now().toString(36);
+        }
+
+        function generateNewKey() {
+            document.getElementById('formIdempKey').value = generateUUID();
+        }
+
+        function loadPreset(key) {
+            const p = presets[key];
+            if (p) {
+                document.getElementById('formTaskType').value = p.taskType;
+                document.getElementById('formDelay').value = p.delay;
+                document.getElementById('formPayload').value = p.payload;
+                generateNewKey();
+            }
+        }
+
+        // Initialize Form
+        loadPreset('IMAGE_PROCESSING');
+
+        // Chart.js Setup
+        const maxDataPoints = 30;
+        const labels = Array(maxDataPoints).fill('');
+        const activeQueueData = Array(maxDataPoints).fill(0);
+        const delayedQueueData = Array(maxDataPoints).fill(0);
+        const activeThreadsData = Array(maxDataPoints).fill(0);
+        const dlqData = Array(maxDataPoints).fill(0);
+
+        const ctx = document.getElementById('telemetryChart').getContext('2d');
+        const telemetryChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Active Queue (Redis)',
+                        data: activeQueueData,
+                        borderColor: '#fbbf24',
+                        backgroundColor: 'rgba(251, 191, 36, 0.08)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        fill: true,
+                        pointRadius: 1
+                    },
+                    {
+                        label: 'Delayed Queue (ZSET)',
+                        data: delayedQueueData,
+                        borderColor: '#22d3ee',
+                        backgroundColor: 'transparent',
+                        borderWidth: 2,
+                        borderDash: [4, 4],
+                        tension: 0.3,
+                        pointRadius: 1
+                    },
+                    {
+                        label: 'Active Threads',
+                        data: activeThreadsData,
+                        borderColor: '#818cf8',
+                        backgroundColor: 'transparent',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 1
+                    },
+                    {
+                        label: 'DLQ Length',
+                        data: dlqData,
+                        borderColor: '#f43f5e',
+                        backgroundColor: 'transparent',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 1
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 400 },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false,
+                        backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                        titleColor: '#e2e8f0',
+                        bodyColor: '#cbd5e1',
+                        borderColor: 'rgba(255, 255, 255, 0.1)',
+                        borderWidth: 1
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: { display: false },
+                        ticks: { display: false }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        suggestedMax: 10,
+                        grid: { color: 'rgba(255, 255, 255, 0.04)' },
+                        ticks: { color: '#64748b', font: { family: 'JetBrains Mono', size: 10 } }
+                    }
+                }
+            }
+        });
+
+        // Polling Metrics
+        async function fetchMetrics() {
+            try {
+                const res = await fetch('/api/v1/metrics');
+                if (!res.ok) return;
+                const m = await res.json();
+
+                // Update Stat Cards
+                document.getElementById('statActiveQueue').innerText = m.activeRedisQueueLength;
+                document.getElementById('statDelayedQueue').innerText = m.delayedRedisQueueLength;
+                document.getElementById('statActiveThreads').innerText = m.activeThreads;
+                document.getElementById('statPoolSize').innerText = m.poolSize;
+                document.getElementById('statQueueCapacity').innerText = m.queueRemainingCapacity;
+                document.getElementById('statCoreMax').innerText = `${m.corePoolSize} core / 8 max`;
+                document.getElementById('statCompleted').innerText = m.completedJobsCount;
+                document.getElementById('statDlq').innerText = m.dlqRedisQueueLength;
+                document.getElementById('statFailed').innerText = m.failedJobsCount;
+
+                // Push to Chart
+                const now = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                labels.push(now);
+                if (labels.length > maxDataPoints) labels.shift();
+
+                activeQueueData.push(m.activeRedisQueueLength);
+                if (activeQueueData.length > maxDataPoints) activeQueueData.shift();
+
+                delayedQueueData.push(m.delayedRedisQueueLength);
+                if (delayedQueueData.length > maxDataPoints) delayedQueueData.shift();
+
+                activeThreadsData.push(m.activeThreads);
+                if (activeThreadsData.length > maxDataPoints) activeThreadsData.shift();
+
+                dlqData.push(m.dlqRedisQueueLength);
+                if (dlqData.length > maxDataPoints) dlqData.shift();
+
+                telemetryChart.update();
+            } catch (err) {
+                console.error('Failed to fetch metrics:', err);
+            }
+        }
+
+        // Status Badge Formatter
+        function renderStatusBadge(status) {
+            switch (status) {
+                case 'COMPLETED':
+                    return `<span class="px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-md">COMPLETED</span>`;
+                case 'RUNNING':
+                    return `<span class="px-2 py-0.5 text-[10px] font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-md flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-blue-400 pulse-indicator"></span>RUNNING</span>`;
+                case 'QUEUED':
+                    return `<span class="px-2 py-0.5 text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-md">QUEUED</span>`;
+                case 'SCHEDULED':
+                    return `<span class="px-2 py-0.5 text-[10px] font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 rounded-md">SCHEDULED</span>`;
+                case 'FAILED':
+                    return `<span class="px-2 py-0.5 text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded-md">FAILED</span>`;
+                default:
+                    return `<span class="px-2 py-0.5 text-[10px] font-semibold bg-slate-800 text-slate-400 border border-slate-700 rounded-md">${status}</span>`;
+            }
+        }
+
+        // Fetch Recent Jobs
+        let recentJobsCache = [];
+        async function fetchRecentJobs() {
+            try {
+                const res = await fetch('/api/v1/jobs/recent');
+                if (!res.ok) return;
+                const jobs = await res.json();
+                recentJobsCache = jobs;
+
+                document.getElementById('jobsCountBadge').innerText = `${jobs.length} jobs`;
+                const tbody = document.getElementById('recentJobsTableBody');
+
+                if (jobs.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-slate-500">No jobs submitted yet. Use the form above to ingest tasks.</td></tr>`;
+                    return;
+                }
+
+                tbody.innerHTML = jobs.map((job, idx) => {
+                    const shortId = job.id ? job.id.substring(0, 8) + '...' : 'N/A';
+                    const timeStr = job.createdAt ? new Date(job.createdAt).toLocaleTimeString() : 'N/A';
+                    const retries = `${job.retryCount || 0} / ${job.maxRetries || 3}`;
+                    const isFailed = job.retryCount >= job.maxRetries;
+
+                    return `
+                        <tr class="hover:bg-slate-900/50 transition">
+                            <td class="px-3.5 py-2.5 font-bold text-slate-200" title="${job.id}">
+                                <span class="cursor-pointer hover:text-brand-400" onclick="copyToClipboard('${job.id}')">${shortId}</span>
+                            </td>
+                            <td class="px-3.5 py-2.5 text-slate-300">${job.taskType}</td>
+                            <td class="px-3.5 py-2.5">${renderStatusBadge(job.status)}</td>
+                            <td class="px-3.5 py-2.5 ${isFailed ? 'text-rose-400 font-bold' : 'text-slate-400'}">${retries}</td>
+                            <td class="px-3.5 py-2.5 text-slate-400 truncate max-w-[120px]" title="${job.idempotencyKey}">${job.idempotencyKey}</td>
+                            <td class="px-3.5 py-2.5 text-slate-400">${timeStr}</td>
+                            <td class="px-3.5 py-2.5 text-right">
+                                <button onclick="inspectPayload(${idx})" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] transition">
+                                    Inspect
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            } catch (err) {
+                console.error('Failed to fetch recent jobs:', err);
+            }
+        }
+
+        // Job Submission Handler
+        async function submitJob(e) {
+            e.preventDefault();
+            const btn = document.getElementById('submitJobBtn');
+            btn.disabled = true;
+            btn.classList.add('opacity-70');
+
+            const idempKey = document.getElementById('formIdempKey').value.trim();
+            const taskType = document.getElementById('formTaskType').value.trim();
+            const delayInSeconds = parseInt(document.getElementById('formDelay').value, 10) || 0;
+            const payload = document.getElementById('formPayload').value.trim();
+
+            try {
+                const res = await fetch('/api/v1/jobs/submit', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Idempotency-Key': idempKey
+                    },
+                    body: JSON.stringify({
+                        taskType: taskType,
+                        payload: payload,
+                        delayInSeconds: delayInSeconds > 0 ? delayInSeconds : null
+                    })
+                });
+
+                const data = await res.json();
+
+                if (res.status === 202) {
+                    showToast('success', 'Job Ingested Successfully', `JobId: ${data.jobId} [${data.status}]`);
+                    generateNewKey();
+                    fetchMetrics();
+                    fetchRecentJobs();
+                } else if (res.status === 409) {
+                    showToast('error', 'Idempotency Conflict (409)', data.message || 'Duplicate key detected');
+                } else {
+                    showToast('error', 'Submission Failed', data.message || 'Server error');
+                }
+            } catch (err) {
+                showToast('error', 'Network Error', err.message);
+            } finally {
+                btn.disabled = false;
+                btn.classList.remove('opacity-70');
+            }
+        }
+
+        // Toast Helpers
+        let toastTimeout;
+        function showToast(type, title, message) {
+            const toast = document.getElementById('toast');
+            const icon = document.getElementById('toastIcon');
+            const titleEl = document.getElementById('toastTitle');
+            const msgEl = document.getElementById('toastMessage');
+
+            titleEl.innerText = title;
+            msgEl.innerText = message;
+
+            if (type === 'success') {
+                toast.className = 'fixed bottom-5 right-5 z-50 transition-all duration-300 max-w-md w-full glass-panel border border-emerald-500/30 rounded-xl p-4 shadow-2xl flex items-start gap-3 translate-y-0 opacity-100';
+                icon.className = 'p-1.5 rounded-lg bg-emerald-500/20 text-emerald-400 shrink-0';
+                icon.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>`;
+            } else {
+                toast.className = 'fixed bottom-5 right-5 z-50 transition-all duration-300 max-w-md w-full glass-panel border border-rose-500/30 rounded-xl p-4 shadow-2xl flex items-start gap-3 translate-y-0 opacity-100';
+                icon.className = 'p-1.5 rounded-lg bg-rose-500/20 text-rose-400 shrink-0';
+                icon.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>`;
+            }
+
+            clearTimeout(toastTimeout);
+            toastTimeout = setTimeout(hideToast, 4000);
+        }
+
+        function hideToast() {
+            const toast = document.getElementById('toast');
+            toast.classList.add('translate-y-24', 'opacity-0');
+        }
+
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text);
+            showToast('success', 'Copied to Clipboard', text);
+        }
+
+        function inspectPayload(index) {
+            const job = recentJobsCache[index];
+            if (!job) return;
+            document.getElementById('modalJobId').innerText = job.id;
+            try {
+                const parsed = JSON.parse(job.payload);
+                document.getElementById('modalPayloadContent').innerText = JSON.stringify(parsed, null, 2);
+            } catch (e) {
+                document.getElementById('modalPayloadContent').innerText = job.payload || '{}';
+            }
+            document.getElementById('inspectModal').classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('inspectModal').classList.add('hidden');
+        }
+
+        // Background intervals
+        setInterval(fetchMetrics, 1000);
+        setInterval(() => {
+            if (document.getElementById('autoRefreshToggle').checked) {
+                fetchRecentJobs();
+            }
+        }, 2000);
+
+        // Initial fetch
+        fetchMetrics();
+        fetchRecentJobs();
+    </script>
+</body>
+</html>

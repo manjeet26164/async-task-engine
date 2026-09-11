@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class ThreadPoolConfig {
 
     @Bean(name = "workerThreadPool", destroyMethod = "shutdown")
-    public ExecutorService workerThreadPool() {
+    public ThreadPoolExecutor workerThreadPool() {
         int corePoolSize = 4;
         int maxPoolSize = 8;
         long keepAliveTime = 60L;

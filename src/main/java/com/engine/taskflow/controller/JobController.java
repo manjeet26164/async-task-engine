@@ -33,15 +33,37 @@ public class JobController {
             @RequestHeader(value = "Idempotency-Key", required = true) String idempotencyKey,
             @RequestBody SubmitJobRequest request) {
 
-        String jobId = taskService.submitJob(idempotencyKey, request.getTaskType(), request.getPayload());
+        String jobId;
+        String status;
+        String message;
+
+        if (request.getDelayInSeconds() != null && request.getDelayInSeconds() > 0) {
+            jobId = taskService.scheduleDelayedJob(
+                    idempotencyKey,
+                    request.getTaskType(),
+                    request.getPayload(),
+                    request.getDelayInSeconds()
+            );
+            status = "SCHEDULED";
+            message = "Job scheduled with " + request.getDelayInSeconds() + "s delay";
+        } else {
+            jobId = taskService.submitJob(idempotencyKey, request.getTaskType(), request.getPayload());
+            status = "QUEUED";
+            message = "Job accepted for asynchronous processing";
+        }
 
         SubmitJobResponse response = SubmitJobResponse.builder()
                 .jobId(jobId)
-                .status("QUEUED")
-                .message("Job accepted for asynchronous processing")
+                .status(status)
+                .message(message)
                 .build();
 
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
+    }
+
+    @GetMapping("/recent")
+    public ResponseEntity<java.util.List<JobRecord>> getRecentJobs() {
+        return ResponseEntity.ok(taskService.getRecentJobs());
     }
 
     @GetMapping("/{id}")
