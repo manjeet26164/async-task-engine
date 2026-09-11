@@ -70,4 +70,35 @@ public class JobControllerTest {
                                 .andExpect(jsonPath("$.error").value("Conflict"))
                                 .andExpect(jsonPath("$.message").isNotEmpty());
         }
+
+        @Test
+        void shouldReturnJobRecordWhenJobExists() throws Exception {
+                String jobId = "job-123";
+                com.engine.taskflow.model.JobRecord record = com.engine.taskflow.model.JobRecord.builder()
+                                .id(jobId)
+                                .idempotencyKey("idemp-test")
+                                .taskType("IMAGE_PROCESSING")
+                                .payload("{\"data\":\"test\"}")
+                                .status("COMPLETED")
+                                .retryCount(0)
+                                .maxRetries(3)
+                                .build();
+
+                when(taskService.getJobById(jobId)).thenReturn(java.util.Optional.of(record));
+
+                mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/jobs/" + jobId))
+                                .andExpect(status().isOk())
+                                .andExpect(jsonPath("$.id").value(jobId))
+                                .andExpect(jsonPath("$.status").value("COMPLETED"))
+                                .andExpect(jsonPath("$.taskType").value("IMAGE_PROCESSING"));
+        }
+
+        @Test
+        void shouldReturnNotFoundWhenJobDoesNotExist() throws Exception {
+                String jobId = "unknown-job";
+                when(taskService.getJobById(jobId)).thenReturn(java.util.Optional.empty());
+
+                mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/jobs/" + jobId))
+                                .andExpect(status().isNotFound());
+        }
 }

@@ -44,7 +44,7 @@ public class TaskServiceTest {
 
     @BeforeEach
     void setUp() {
-        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        org.mockito.Mockito.lenient().when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
     }
 
     @Test
@@ -90,5 +90,18 @@ public class TaskServiceTest {
         );
 
         verify(jobRepository, never()).save(any(JobRecord.class));
+    }
+
+    @Test
+    void shouldFindJobByIdWhenJobExists() {
+        String jobId = "job-lookup-1";
+        JobRecord record = JobRecord.builder().id(jobId).status("QUEUED").build();
+        when(jobRepository.findById(jobId)).thenReturn(java.util.Optional.of(record));
+
+        java.util.Optional<JobRecord> result = taskService.getJobById(jobId);
+
+        assertEquals(true, result.isPresent());
+        assertEquals("QUEUED", result.get().getStatus());
+        verify(jobRepository).findById(jobId);
     }
 }

@@ -68,4 +68,15 @@ public class TaskService {
         // Step d: Return generated jobId
         return jobId;
     }
+
+    /**
+     * Retrieves a JobRecord by its unique ID.
+     *
+     * @param jobId the ID of the job
+     * @return an Optional containing the JobRecord if found
+     */
+    @Transactional(readOnly = true)
+    public java.util.Optional<JobRecord> getJobById(String jobId) {
+        return jobRepository.findById(jobId);
+    }
 }
