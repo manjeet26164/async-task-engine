@@ -24,3 +24,10 @@ spring.data.redis.host=${SPRING_REDIS_HOST:localhost}
 spring.data.redis.port=${SPRING_REDIS_PORT:6379}
 spring.data.redis.password=${SPRING_REDIS_PASSWORD:}
 spring.data.redis.ssl.enabled=${SPRING_REDIS_SSL:false}
+
+# Application Security (API-Key protection for /api/v1/**)
+app.security.api-key=${APP_SECURITY_API_KEY:taskflow-secret-key-2026}
+
+# Worker Recovery & Lease Management
+app.worker.stuck-timeout-seconds=${APP_WORKER_STUCK_TIMEOUT_SECONDS:300}
+app.worker.recovery-interval-ms=${APP_WORKER_RECOVERY_INTERVAL_MS:60000}

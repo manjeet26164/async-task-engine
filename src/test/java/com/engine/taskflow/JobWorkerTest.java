@@ -1,6 +1,7 @@
 package com.engine.taskflow;
 
 import com.engine.taskflow.model.JobRecord;
+import com.engine.taskflow.model.JobStatus;
 import com.engine.taskflow.repository.JobRepository;
 import com.engine.taskflow.worker.JobWorker;
 import org.junit.jupiter.api.BeforeEach;
@@ -10,7 +11,9 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.ListOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ZSetOperations;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -18,6 +21,7 @@ import java.util.concurrent.ExecutorService;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -29,6 +33,9 @@ public class JobWorkerTest {
 
     @Mock
     private ListOperations<String, String> listOperations;
+
+    @Mock
+    private ZSetOperations<String, String> zSetOperations;
 
     @Mock
     private JobRepository jobRepository;
@@ -51,14 +58,14 @@ public class JobWorkerTest {
                 .idempotencyKey("idemp-1")
                 .taskType("IMAGE_PROCESSING")
                 .payload("{\"fileUrl\":\"https://example.com/img.png\"}")
-                .status("QUEUED")
+                .status(JobStatus.QUEUED)
                 .retryCount(0)
                 .maxRetries(3)
                 .build();
 
         when(jobRepository.findById(jobId)).thenReturn(Optional.of(jobRecord));
 
-        List<String> statusTransitions = new ArrayList<>();
+        List<JobStatus> statusTransitions = new ArrayList<>();
         when(jobRepository.save(any(JobRecord.class))).thenAnswer(invocation -> {
             JobRecord record = invocation.getArgument(0);
             statusTransitions.add(record.getStatus());
@@ -69,28 +76,28 @@ public class JobWorkerTest {
 
         verify(jobRepository, times(2)).save(jobRecord);
         assertEquals(2, statusTransitions.size());
-        assertEquals("RUNNING", statusTransitions.get(0));
-        assertEquals("COMPLETED", statusTransitions.get(1));
-        assertEquals("COMPLETED", jobRecord.getStatus());
+        assertEquals(JobStatus.RUNNING, statusTransitions.get(0));
+        assertEquals(JobStatus.COMPLETED, statusTransitions.get(1));
+        assertEquals(JobStatus.COMPLETED, jobRecord.getStatus());
     }
 
     @Test
-    void shouldRequeueJobWhenExecutionFailsAndRetriesRemain() {
+    void shouldScheduleExponentialBackoffWhenExecutionFailsAndRetriesRemain() {
         String jobId = "job-fail-1";
         JobRecord jobRecord = JobRecord.builder()
                 .id(jobId)
                 .idempotencyKey("idemp-fail-1")
                 .taskType("SEND_EMAIL")
                 .payload("{\"error\":\"fail_network\"}")
-                .status("QUEUED")
+                .status(JobStatus.QUEUED)
                 .retryCount(0)
                 .maxRetries(3)
                 .build();
 
         when(jobRepository.findById(jobId)).thenReturn(Optional.of(jobRecord));
-        when(stringRedisTemplate.opsForList()).thenReturn(listOperations);
+        when(stringRedisTemplate.opsForZSet()).thenReturn(zSetOperations);
 
-        List<String> statusTransitions = new ArrayList<>();
+        List<JobStatus> statusTransitions = new ArrayList<>();
         when(jobRepository.save(any(JobRecord.class))).thenAnswer(invocation -> {
             JobRecord record = invocation.getArgument(0);
             statusTransitions.add(record.getStatus());
@@ -101,12 +108,13 @@ public class JobWorkerTest {
 
         verify(jobRepository, times(2)).save(jobRecord);
         assertEquals(2, statusTransitions.size());
-        assertEquals("RUNNING", statusTransitions.get(0));
-        assertEquals("QUEUED", statusTransitions.get(1));
+        assertEquals(JobStatus.RUNNING, statusTransitions.get(0));
+        assertEquals(JobStatus.SCHEDULED, statusTransitions.get(1));
         assertEquals(1, jobRecord.getRetryCount());
 
-        verify(listOperations).leftPush(JobWorker.ACTIVE_QUEUE_KEY, jobId);
-        verify(listOperations, never()).leftPush(eq(JobWorker.DLQ_KEY), anyString());
+        // Exponential backoff for retry 1: 2^1 = 2 seconds
+        verify(zSetOperations).add(eq(JobWorker.DELAYED_QUEUE_KEY), eq(jobId), anyDouble());
+        verifyNoInteractions(listOperations);
     }
 
     @Test
@@ -117,7 +125,7 @@ public class JobWorkerTest {
                 .idempotencyKey("idemp-fail-max")
                 .taskType("SEND_EMAIL")
                 .payload("{\"error\":\"fail_permanent\"}")
-                .status("QUEUED")
+                .status(JobStatus.QUEUED)
                 .retryCount(2)
                 .maxRetries(3)
                 .build();
@@ -125,7 +133,7 @@ public class JobWorkerTest {
         when(jobRepository.findById(jobId)).thenReturn(Optional.of(jobRecord));
         when(stringRedisTemplate.opsForList()).thenReturn(listOperations);
 
-        List<String> statusTransitions = new ArrayList<>();
+        List<JobStatus> statusTransitions = new ArrayList<>();
         when(jobRepository.save(any(JobRecord.class))).thenAnswer(invocation -> {
             JobRecord record = invocation.getArgument(0);
             statusTransitions.add(record.getStatus());
@@ -136,12 +144,58 @@ public class JobWorkerTest {
 
         verify(jobRepository, times(2)).save(jobRecord);
         assertEquals(2, statusTransitions.size());
-        assertEquals("RUNNING", statusTransitions.get(0));
-        assertEquals("FAILED", statusTransitions.get(1));
+        assertEquals(JobStatus.RUNNING, statusTransitions.get(0));
+        assertEquals(JobStatus.FAILED, statusTransitions.get(1));
         assertEquals(3, jobRecord.getRetryCount());
 
         verify(listOperations).leftPush(JobWorker.DLQ_KEY, jobId);
         verify(listOperations, never()).leftPush(eq(JobWorker.ACTIVE_QUEUE_KEY), anyString());
+    }
+
+    @Test
+    void shouldRecoverStuckJobAndRequeueWhenRetriesRemain() {
+        JobRecord stuckJob = JobRecord.builder()
+                .id("stuck-job-1")
+                .taskType("PAYMENT")
+                .status(JobStatus.RUNNING)
+                .retryCount(0)
+                .maxRetries(3)
+                .updatedAt(LocalDateTime.now().minusMinutes(10))
+                .build();
+
+        when(jobRepository.findByStatusAndUpdatedAtBefore(eq(JobStatus.RUNNING), any(LocalDateTime.class)))
+                .thenReturn(List.of(stuckJob));
+        when(stringRedisTemplate.opsForList()).thenReturn(listOperations);
+
+        jobWorker.recoverStuckJobs();
+
+        assertEquals(1, stuckJob.getRetryCount());
+        assertEquals(JobStatus.QUEUED, stuckJob.getStatus());
+        verify(jobRepository).save(stuckJob);
+        verify(listOperations).leftPush(JobWorker.ACTIVE_QUEUE_KEY, "stuck-job-1");
+    }
+
+    @Test
+    void shouldRouteStuckJobToDlqWhenMaxRetriesExceeded() {
+        JobRecord stuckJob = JobRecord.builder()
+                .id("stuck-job-max")
+                .taskType("PAYMENT")
+                .status(JobStatus.RUNNING)
+                .retryCount(2)
+                .maxRetries(3)
+                .updatedAt(LocalDateTime.now().minusMinutes(10))
+                .build();
+
+        when(jobRepository.findByStatusAndUpdatedAtBefore(eq(JobStatus.RUNNING), any(LocalDateTime.class)))
+                .thenReturn(List.of(stuckJob));
+        when(stringRedisTemplate.opsForList()).thenReturn(listOperations);
+
+        jobWorker.recoverStuckJobs();
+
+        assertEquals(3, stuckJob.getRetryCount());
+        assertEquals(JobStatus.FAILED, stuckJob.getStatus());
+        verify(jobRepository).save(stuckJob);
+        verify(listOperations).leftPush(JobWorker.DLQ_KEY, "stuck-job-max");
     }
 
     @Test

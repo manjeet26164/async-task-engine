@@ -1,6 +1,7 @@
 package com.engine.taskflow.controller;
 
 import com.engine.taskflow.dto.MetricsResponse;
+import com.engine.taskflow.model.JobStatus;
 import com.engine.taskflow.repository.JobRepository;
 import com.engine.taskflow.worker.JobWorker;
 import lombok.extern.slf4j.Slf4j;
@@ -47,8 +48,8 @@ public class MetricsController {
                 .activeRedisQueueLength(Optional.ofNullable(activeQueueSize).orElse(0L))
                 .dlqRedisQueueLength(Optional.ofNullable(dlqQueueSize).orElse(0L))
                 .delayedRedisQueueLength(Optional.ofNullable(delayedQueueSize).orElse(0L))
-                .completedJobsCount(jobRepository.countByStatus("COMPLETED"))
-                .failedJobsCount(jobRepository.countByStatus("FAILED"))
+                .completedJobsCount(jobRepository.countByStatus(JobStatus.COMPLETED))
+                .failedJobsCount(jobRepository.countByStatus(JobStatus.FAILED))
                 .build();
 
         return ResponseEntity.ok(metrics);

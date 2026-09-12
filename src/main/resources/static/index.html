@@ -511,10 +511,15 @@
             }
         });
 
+        // API Key configuration
+        const API_KEY = 'taskflow-secret-key-2026';
+
         // Polling Metrics
         async function fetchMetrics() {
             try {
-                const res = await fetch('/api/v1/metrics');
+                const res = await fetch('/api/v1/metrics', {
+                    headers: { 'X-API-KEY': API_KEY }
+                });
                 if (!res.ok) return;
                 const m = await res.json();
 
@@ -574,7 +579,9 @@
         let recentJobsCache = [];
         async function fetchRecentJobs() {
             try {
-                const res = await fetch('/api/v1/jobs/recent');
+                const res = await fetch('/api/v1/jobs/recent', {
+                    headers: { 'X-API-KEY': API_KEY }
+                });
                 if (!res.ok) return;
                 const jobs = await res.json();
                 recentJobsCache = jobs;
@@ -591,7 +598,7 @@
                     const shortId = job.id ? job.id.substring(0, 8) + '...' : 'N/A';
                     const timeStr = job.createdAt ? new Date(job.createdAt).toLocaleTimeString() : 'N/A';
                     const retries = `${job.retryCount || 0} / ${job.maxRetries || 3}`;
-                    const isFailed = job.retryCount >= job.maxRetries;
+                    const isFailed = job.status === 'FAILED' || (job.retryCount >= job.maxRetries);
 
                     return `
                         <tr class="hover:bg-slate-900/50 transition">
@@ -603,16 +610,41 @@
                             <td class="px-3.5 py-2.5 ${isFailed ? 'text-rose-400 font-bold' : 'text-slate-400'}">${retries}</td>
                             <td class="px-3.5 py-2.5 text-slate-400 truncate max-w-[120px]" title="${job.idempotencyKey}">${job.idempotencyKey}</td>
                             <td class="px-3.5 py-2.5 text-slate-400">${timeStr}</td>
-                            <td class="px-3.5 py-2.5 text-right">
+                            <td class="px-3.5 py-2.5 text-right flex items-center justify-end gap-1.5">
                                 <button onclick="inspectPayload(${idx})" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] transition">
                                     Inspect
                                 </button>
+                                ${job.status === 'FAILED' ? `
+                                <button onclick="replayJob('${job.id}')" class="px-2 py-1 rounded bg-rose-900/40 hover:bg-rose-800/60 text-rose-300 border border-rose-700/50 text-[11px] transition font-semibold">
+                                    Replay
+                                </button>
+                                ` : ''}
                             </td>
                         </tr>
                     `;
                 }).join('');
             } catch (err) {
                 console.error('Failed to fetch recent jobs:', err);
+            }
+        }
+
+        // Replay DLQ Job
+        async function replayJob(jobId) {
+            try {
+                const res = await fetch(`/api/v1/jobs/dlq/${jobId}/replay`, {
+                    method: 'POST',
+                    headers: { 'X-API-KEY': API_KEY }
+                });
+                if (res.ok) {
+                    showToast('success', 'Job Replayed', `Job ${jobId.substring(0,8)}... requeued to active queue`);
+                    fetchMetrics();
+                    fetchRecentJobs();
+                } else {
+                    const err = await res.json();
+                    showToast('error', 'Replay Failed', err.message || 'Unable to replay job');
+                }
+            } catch (e) {
+                showToast('error', 'Network Error', e.message);
             }
         }
 
@@ -633,7 +665,8 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Idempotency-Key': idempKey
+                        'Idempotency-Key': idempKey,
+                        'X-API-KEY': API_KEY
                     },
                     body: JSON.stringify({
                         taskType: taskType,

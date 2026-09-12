@@ -5,6 +5,7 @@
 # ==============================================================================
 
 TARGET_URL="${1:-http://localhost:8080/api/v1/jobs/submit}"
+API_KEY="${2:-taskflow-secret-key-2026}"
 TOTAL_REQUESTS=200
 
 echo -e "\033[0;36m========================================================\033[0m"
@@ -37,6 +38,7 @@ for i in $(seq 1 $TOTAL_REQUESTS); do
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$TARGET_URL" \
       -H "Content-Type: application/json" \
       -H "Idempotency-Key: $IDEMP_KEY" \
+      -H "X-API-KEY: $API_KEY" \
       -d "{\"taskType\": \"$TASK_TYPE\", \"payload\": \"{\\\"taskIndex\\\": $i, \\\"fail\\\": $FAIL_FLAG}\"}")
     echo "$HTTP_CODE" >> "$TEMP_DIR/results.txt"
   ) &

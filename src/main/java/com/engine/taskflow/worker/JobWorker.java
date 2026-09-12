@@ -1,17 +1,20 @@
 package com.engine.taskflow.worker;
 
 import com.engine.taskflow.model.JobRecord;
+import com.engine.taskflow.model.JobStatus;
 import com.engine.taskflow.repository.JobRepository;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
@@ -26,6 +29,7 @@ public class JobWorker {
     public static final String DLQ_KEY = "jobs:queue:dlq";
     public static final String DELAYED_QUEUE_KEY = "jobs:queue:delayed";
     private static final long POLL_TIMEOUT_SECONDS = 2L;
+    private static final long MAX_BACKOFF_SECONDS = 300L;
 
     private static final String MOVE_DELAYED_JOBS_LUA =
             "local jobs = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, 100)\n" +
@@ -45,6 +49,9 @@ public class JobWorker {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private Thread pollingThread;
 
+    @Value("${app.worker.stuck-timeout-seconds:300}")
+    private long stuckTimeoutSeconds = 300L;
+
     public JobWorker(
             StringRedisTemplate stringRedisTemplate,
             JobRepository jobRepository,
@@ -54,6 +61,9 @@ public class JobWorker {
         this.workerThreadPool = workerThreadPool;
     }
 
+    /**
+     * Periodically polls mature delayed jobs from Redis Sorted Set and promotes them to the active queue.
+     */
     @Scheduled(fixedRate = 500)
     public void pollDelayedJobs() {
         try {
@@ -68,6 +78,51 @@ public class JobWorker {
             }
         } catch (Exception e) {
             log.error("Error promoting delayed jobs from Redis: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Periodic watchdog task to detect and recover orphaned / stuck jobs.
+     * If a worker crashed while executing a job (status remains RUNNING beyond the lease timeout),
+     * this scheduled task re-enqueues the job or routes it to DLQ if retries are exhausted.
+     */
+    @Scheduled(fixedDelayString = "${app.worker.recovery-interval-ms:60000}")
+    public void recoverStuckJobs() {
+        try {
+            LocalDateTime threshold = LocalDateTime.now().minusSeconds(stuckTimeoutSeconds);
+            List<JobRecord> stuckJobs = jobRepository.findByStatusAndUpdatedAtBefore(JobStatus.RUNNING, threshold);
+
+            if (!stuckJobs.isEmpty()) {
+                log.warn("Watchdog detected {} stuck/orphaned job(s) in RUNNING state older than {}s",
+                        stuckJobs.size(), stuckTimeoutSeconds);
+
+                for (JobRecord job : stuckJobs) {
+                    recoverOrphanedJob(job);
+                }
+            }
+        } catch (Exception e) {
+            log.error("Error during stuck job recovery watchdog scan: {}", e.getMessage(), e);
+        }
+    }
+
+    private void recoverOrphanedJob(JobRecord job) {
+        String jobId = job.getId();
+        int updatedRetryCount = job.getRetryCount() + 1;
+        job.setRetryCount(updatedRetryCount);
+        int maxRetries = job.getMaxRetries() > 0 ? job.getMaxRetries() : 3;
+
+        if (updatedRetryCount >= maxRetries) {
+            job.setStatus(JobStatus.FAILED);
+            jobRepository.save(job);
+            stringRedisTemplate.opsForList().leftPush(DLQ_KEY, jobId);
+            log.error("Stuck job {} exceeded max retries ({}/{}). Marked as FAILED and routed to DLQ",
+                    jobId, updatedRetryCount, maxRetries);
+        } else {
+            job.setStatus(JobStatus.QUEUED);
+            jobRepository.save(job);
+            stringRedisTemplate.opsForList().leftPush(ACTIVE_QUEUE_KEY, jobId);
+            log.warn("Stuck job {} recovered (retry {}/{}). Re-queued to active queue",
+                    jobId, updatedRetryCount, maxRetries);
         }
     }
 
@@ -133,7 +188,7 @@ public class JobWorker {
 
         try {
             // Step 1: Update job status in PostgreSQL to RUNNING
-            job.setStatus("RUNNING");
+            job.setStatus(JobStatus.RUNNING);
             jobRepository.save(job);
             log.info("[{}] Job {} marked as RUNNING in PostgreSQL", threadName, jobId);
 
@@ -146,7 +201,7 @@ public class JobWorker {
             }
 
             // Step 4: On success: set status to COMPLETED
-            job.setStatus("COMPLETED");
+            job.setStatus(JobStatus.COMPLETED);
             jobRepository.save(job);
             log.info("[{}] Job {} completed successfully. Marked as COMPLETED in PostgreSQL", threadName, jobId);
 
@@ -165,17 +220,26 @@ public class JobWorker {
         int maxRetries = job.getMaxRetries() > 0 ? job.getMaxRetries() : 3;
 
         if (updatedRetryCount >= maxRetries) {
-            job.setStatus("FAILED");
+            job.setStatus(JobStatus.FAILED);
             jobRepository.save(job);
             stringRedisTemplate.opsForList().leftPush(DLQ_KEY, jobId);
             log.error("[{}] Job {} reached max retries ({}/{}). Marked as FAILED and routed to DLQ [{}]",
                     threadName, jobId, updatedRetryCount, maxRetries, DLQ_KEY);
         } else {
-            job.setStatus("QUEUED");
+            // Exponential backoff: 2^retryCount seconds (e.g. 2s, 4s, 8s...) capped at MAX_BACKOFF_SECONDS
+            long backoffDelaySeconds = (long) Math.min(MAX_BACKOFF_SECONDS, Math.pow(2, updatedRetryCount));
+            job.setStatus(JobStatus.SCHEDULED);
             jobRepository.save(job);
-            stringRedisTemplate.opsForList().leftPush(ACTIVE_QUEUE_KEY, jobId);
-            log.warn("[{}] Job {} failed (retry {}/{}). Marked as QUEUED and requeued to active queue [{}]",
-                    threadName, jobId, updatedRetryCount, maxRetries, ACTIVE_QUEUE_KEY);
+
+            double executeAt = (double) (System.currentTimeMillis() + (backoffDelaySeconds * 1000L));
+            stringRedisTemplate.opsForZSet().add(DELAYED_QUEUE_KEY, jobId, executeAt);
+
+            log.warn("[{}] Job {} failed (retry {}/{}). Exponential backoff delay {}s. Scheduled in Redis ZSET [{}]",
+                    threadName, jobId, updatedRetryCount, maxRetries, backoffDelaySeconds, DELAYED_QUEUE_KEY);
         }
+    }
+
+    public void setStuckTimeoutSeconds(long stuckTimeoutSeconds) {
+        this.stuckTimeoutSeconds = stuckTimeoutSeconds;
     }
 }

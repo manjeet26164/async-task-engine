@@ -2,6 +2,8 @@ package com.engine.taskflow.model;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.PrePersist;
@@ -45,8 +47,9 @@ public class JobRecord {
     @Column(name = "payload", columnDefinition = "TEXT")
     private String payload;
 
+    @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false)
-    private String status;
+    private JobStatus status;
 
     @Column(name = "retry_count", nullable = false)
     @Builder.Default
@@ -73,7 +76,7 @@ public class JobRecord {
         }
         this.updatedAt = now;
         if (this.status == null) {
-            this.status = "QUEUED";
+            this.status = JobStatus.QUEUED;
         }
     }
 

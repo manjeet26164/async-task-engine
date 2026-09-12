@@ -2,14 +2,13 @@ package com.engine.taskflow.controller;
 
 import com.engine.taskflow.dto.SubmitJobRequest;
 import com.engine.taskflow.dto.SubmitJobResponse;
-import com.engine.taskflow.exception.DuplicateJobException;
 import com.engine.taskflow.model.JobRecord;
 import com.engine.taskflow.service.TaskService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -18,7 +17,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Map;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/jobs")
@@ -31,7 +30,7 @@ public class JobController {
     @PostMapping("/submit")
     public ResponseEntity<SubmitJobResponse> submitJob(
             @RequestHeader(value = "Idempotency-Key", required = true) String idempotencyKey,
-            @RequestBody SubmitJobRequest request) {
+            @Valid @RequestBody SubmitJobRequest request) {
 
         String jobId;
         String status;
@@ -62,7 +61,7 @@ public class JobController {
     }
 
     @GetMapping("/recent")
-    public ResponseEntity<java.util.List<JobRecord>> getRecentJobs() {
+    public ResponseEntity<List<JobRecord>> getRecentJobs() {
         return ResponseEntity.ok(taskService.getRecentJobs());
     }
 
@@ -73,12 +72,14 @@ public class JobController {
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
-    @ExceptionHandler(DuplicateJobException.class)
-    public ResponseEntity<Map<String, String>> handleDuplicateJobException(DuplicateJobException ex) {
-        log.warn("Handling DuplicateJobException: {}", ex.getMessage());
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
-                "error", "Conflict",
-                "message", ex.getMessage()
-        ));
+    @GetMapping("/dlq")
+    public ResponseEntity<List<JobRecord>> getDlqJobs() {
+        return ResponseEntity.ok(taskService.getDlqJobs());
+    }
+
+    @PostMapping("/dlq/{id}/replay")
+    public ResponseEntity<JobRecord> replayDlqJob(@PathVariable("id") String id) {
+        JobRecord replayed = taskService.replayDlqJob(id);
+        return ResponseEntity.ok(replayed);
     }
 }

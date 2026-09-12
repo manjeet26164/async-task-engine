@@ -6,6 +6,7 @@
 
 param(
     [string]$TargetUrl = "http://localhost:8080/api/v1/jobs/submit",
+    [string]$ApiKey = "taskflow-secret-key-2026",
     [int]$TotalRequests = 200,
     [int]$Concurrency = 50
 )
@@ -54,6 +55,7 @@ for ($i = 1; $i -le $TotalRequests; $i++) {
 
     $httpRequest = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Post, $TargetUrl)
     $httpRequest.Headers.Add("Idempotency-Key", $idempKey)
+    $httpRequest.Headers.Add("X-API-KEY", $ApiKey)
     $httpRequest.Content = New-Object System.Net.Http.StringContent($requestBodyJson, [System.Text.Encoding]::UTF8, "application/json")
 
     $asyncTask = $httpClient.SendAsync($httpRequest).ContinueWith([Action[System.Threading.Tasks.Task[System.Net.Http.HttpResponseMessage]]]{

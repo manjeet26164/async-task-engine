@@ -2,6 +2,7 @@ package com.engine.taskflow.service;
 
 import com.engine.taskflow.exception.DuplicateJobException;
 import com.engine.taskflow.model.JobRecord;
+import com.engine.taskflow.model.JobStatus;
 import com.engine.taskflow.repository.JobRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -10,17 +11,24 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class TaskService {
 
-    private static final String IDEMPOTENCY_KEY_PREFIX = "idemp:";
-    private static final String IDEMPOTENCY_LOCKED_VALUE = "LOCKED";
-    private static final Duration IDEMPOTENCY_TTL = Duration.ofSeconds(60);
-    private static final String ACTIVE_QUEUE_KEY = "jobs:queue:active";
-    private static final String DELAYED_QUEUE_KEY = "jobs:queue:delayed";
+    public static final String IDEMPOTENCY_KEY_PREFIX = "idemp:";
+    public static final String IDEMPOTENCY_LOCKED_VALUE = "LOCKED";
+    public static final Duration IDEMPOTENCY_TTL = Duration.ofSeconds(60);
+    public static final String ACTIVE_QUEUE_KEY = "jobs:queue:active";
+    public static final String DELAYED_QUEUE_KEY = "jobs:queue:delayed";
+    public static final String DLQ_KEY = "jobs:queue:dlq";
 
     private final StringRedisTemplate stringRedisTemplate;
     private final JobRepository jobRepository;
@@ -56,7 +64,7 @@ public class TaskService {
             .idempotencyKey(idempotencyKey)
             .taskType(taskType)
             .payload(payload)
-            .status("QUEUED")
+            .status(JobStatus.QUEUED)
             .build();
 
         JobRecord savedRecord = jobRepository.save(jobRecord);
@@ -101,7 +109,7 @@ public class TaskService {
             .idempotencyKey(idempotencyKey)
             .taskType(taskType)
             .payload(payload)
-            .status("SCHEDULED")
+            .status(JobStatus.SCHEDULED)
             .build();
 
         JobRecord savedRecord = jobRepository.save(jobRecord);
@@ -121,7 +129,7 @@ public class TaskService {
      * @return an Optional containing the JobRecord if found
      */
     @Transactional(readOnly = true)
-    public java.util.Optional<JobRecord> getJobById(String jobId) {
+    public Optional<JobRecord> getJobById(String jobId) {
         return jobRepository.findById(jobId);
     }
 
@@ -131,7 +139,57 @@ public class TaskService {
      * @return list of recent JobRecord entities
      */
     @Transactional(readOnly = true)
-    public java.util.List<JobRecord> getRecentJobs() {
+    public List<JobRecord> getRecentJobs() {
         return jobRepository.findTop20ByOrderByCreatedAtDesc();
+    }
+
+    /**
+     * Lists all jobs currently in Dead Letter Queue (DLQ).
+     * Retrieves job IDs from the Redis DLQ list and populates the full JobRecord details from PostgreSQL.
+     *
+     * @return list of JobRecord entities residing in DLQ
+     */
+    @Transactional(readOnly = true)
+    public List<JobRecord> getDlqJobs() {
+        List<String> dlqJobIds = stringRedisTemplate.opsForList().range(DLQ_KEY, 0, -1);
+        if (dlqJobIds == null || dlqJobIds.isEmpty()) {
+            return jobRepository.findByStatus(JobStatus.FAILED);
+        }
+
+        Map<String, JobRecord> jobMap = jobRepository.findAllById(dlqJobIds).stream()
+                .collect(Collectors.toMap(JobRecord::getId, Function.identity()));
+
+        return dlqJobIds.stream()
+                .map(jobMap::get)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Replays a dead-lettered job by removing it from the DLQ, resetting its status to QUEUED,
+     * resetting retry count, and re-enqueueing it to the active processing queue.
+     *
+     * @param jobId ID of the dead-lettered job to replay
+     * @return the updated JobRecord
+     * @throws IllegalArgumentException if the job does not exist
+     */
+    @Transactional
+    public JobRecord replayDlqJob(String jobId) {
+        JobRecord job = jobRepository.findById(jobId)
+                .orElseThrow(() -> new IllegalArgumentException("Job not found with ID: " + jobId));
+
+        // Remove 1 occurrence from Redis DLQ list
+        stringRedisTemplate.opsForList().remove(DLQ_KEY, 1, jobId);
+
+        // Reset state for clean retry
+        job.setStatus(JobStatus.QUEUED);
+        job.setRetryCount(0);
+        JobRecord saved = jobRepository.save(job);
+
+        // Re-enqueue into active queue
+        stringRedisTemplate.opsForList().leftPush(ACTIVE_QUEUE_KEY, jobId);
+        log.info("Job {} successfully replayed from DLQ to active queue", jobId);
+
+        return saved;
     }
 }

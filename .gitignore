@@ -50,6 +50,15 @@ logs/
 .env.production.local
 
 # Sensitive Spring Boot profiles & overrides
+application.properties
+application.properties.*
+application.yml
+application.yaml
+src/main/resources/application.properties
+src/main/resources/application.yml
+src/main/resources/application.yaml
+!application.properties.example
+!src/main/resources/application.properties.example
 application-local.properties
 application-local.yml
 application-local.yaml

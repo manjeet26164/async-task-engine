@@ -2,6 +2,7 @@ package com.engine.taskflow;
 
 import com.engine.taskflow.exception.DuplicateJobException;
 import com.engine.taskflow.model.JobRecord;
+import com.engine.taskflow.model.JobStatus;
 import com.engine.taskflow.repository.JobRepository;
 import com.engine.taskflow.service.TaskService;
 import org.junit.jupiter.api.BeforeEach;
@@ -13,11 +14,15 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.ListOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.data.redis.core.ZSetOperations;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -35,6 +40,9 @@ public class TaskServiceTest {
 
     @Mock
     private ListOperations<String, String> listOperations;
+
+    @Mock
+    private ZSetOperations<String, String> zSetOperations;
 
     @Mock
     private JobRepository jobRepository;
@@ -63,7 +71,7 @@ public class TaskServiceTest {
                 .idempotencyKey(idempotencyKey)
                 .taskType(taskType)
                 .payload(payload)
-                .status("QUEUED")
+                .status(JobStatus.QUEUED)
                 .build();
 
         when(jobRepository.save(any(JobRecord.class))).thenReturn(savedRecord);
@@ -73,7 +81,7 @@ public class TaskServiceTest {
         assertEquals("generated-job-id-999", resultJobId);
         verify(valueOperations).setIfAbsent(eq("idemp:" + idempotencyKey), eq("LOCKED"), any(Duration.class));
         verify(jobRepository).save(any(JobRecord.class));
-        verify(listOperations).leftPush("jobs:queue:active", "generated-job-id-999");
+        verify(listOperations).leftPush(TaskService.ACTIVE_QUEUE_KEY, "generated-job-id-999");
     }
 
     @Test
@@ -95,13 +103,13 @@ public class TaskServiceTest {
     @Test
     void shouldFindJobByIdWhenJobExists() {
         String jobId = "job-lookup-1";
-        JobRecord record = JobRecord.builder().id(jobId).status("QUEUED").build();
-        when(jobRepository.findById(jobId)).thenReturn(java.util.Optional.of(record));
+        JobRecord record = JobRecord.builder().id(jobId).status(JobStatus.QUEUED).build();
+        when(jobRepository.findById(jobId)).thenReturn(Optional.of(record));
 
-        java.util.Optional<JobRecord> result = taskService.getJobById(jobId);
+        Optional<JobRecord> result = taskService.getJobById(jobId);
 
-        assertEquals(true, result.isPresent());
-        assertEquals("QUEUED", result.get().getStatus());
+        assertTrue(result.isPresent());
+        assertEquals(JobStatus.QUEUED, result.get().getStatus());
         verify(jobRepository).findById(jobId);
     }
 
@@ -112,8 +120,7 @@ public class TaskServiceTest {
         String payload = "{\"batch\":100}";
         long delaySeconds = 15L;
 
-        org.springframework.data.redis.core.ZSetOperations<String, String> zsetOps = org.mockito.Mockito.mock(org.springframework.data.redis.core.ZSetOperations.class);
-        when(stringRedisTemplate.opsForZSet()).thenReturn(zsetOps);
+        when(stringRedisTemplate.opsForZSet()).thenReturn(zSetOperations);
         when(valueOperations.setIfAbsent(eq("idemp:" + idempotencyKey), eq("LOCKED"), any(Duration.class)))
                 .thenReturn(true);
 
@@ -122,7 +129,7 @@ public class TaskServiceTest {
                 .idempotencyKey(idempotencyKey)
                 .taskType(taskType)
                 .payload(payload)
-                .status("SCHEDULED")
+                .status(JobStatus.SCHEDULED)
                 .build();
 
         when(jobRepository.save(any(JobRecord.class))).thenReturn(savedRecord);
@@ -131,18 +138,62 @@ public class TaskServiceTest {
 
         assertEquals("generated-delayed-id", resultJobId);
         verify(jobRepository).save(any(JobRecord.class));
-        verify(zsetOps).add(eq("jobs:queue:delayed"), eq("generated-delayed-id"), any(Double.class));
+        verify(zSetOperations).add(eq(TaskService.DELAYED_QUEUE_KEY), eq("generated-delayed-id"), any(Double.class));
     }
 
     @Test
     void shouldReturnRecentJobsList() {
-        JobRecord r1 = JobRecord.builder().id("job-1").status("COMPLETED").build();
-        when(jobRepository.findTop20ByOrderByCreatedAtDesc()).thenReturn(java.util.List.of(r1));
+        JobRecord r1 = JobRecord.builder().id("job-1").status(JobStatus.COMPLETED).build();
+        when(jobRepository.findTop20ByOrderByCreatedAtDesc()).thenReturn(List.of(r1));
 
-        java.util.List<JobRecord> recent = taskService.getRecentJobs();
+        List<JobRecord> recent = taskService.getRecentJobs();
 
         assertEquals(1, recent.size());
         assertEquals("job-1", recent.get(0).getId());
         verify(jobRepository).findTop20ByOrderByCreatedAtDesc();
+    }
+
+    @Test
+    void shouldReturnDlqJobsFromRedisAndDatabase() {
+        when(stringRedisTemplate.opsForList()).thenReturn(listOperations);
+        when(listOperations.range(TaskService.DLQ_KEY, 0, -1)).thenReturn(List.of("dlq-job-1"));
+
+        JobRecord dlqRecord = JobRecord.builder()
+                .id("dlq-job-1")
+                .taskType("PAYMENT")
+                .status(JobStatus.FAILED)
+                .retryCount(3)
+                .build();
+
+        when(jobRepository.findAllById(List.of("dlq-job-1"))).thenReturn(List.of(dlqRecord));
+
+        List<JobRecord> dlqJobs = taskService.getDlqJobs();
+
+        assertEquals(1, dlqJobs.size());
+        assertEquals("dlq-job-1", dlqJobs.get(0).getId());
+        assertEquals(JobStatus.FAILED, dlqJobs.get(0).getStatus());
+    }
+
+    @Test
+    void shouldSuccessfullyReplayDlqJob() {
+        String jobId = "dlq-job-replay";
+        JobRecord failedJob = JobRecord.builder()
+                .id(jobId)
+                .taskType("OCR")
+                .status(JobStatus.FAILED)
+                .retryCount(3)
+                .build();
+
+        when(jobRepository.findById(jobId)).thenReturn(Optional.of(failedJob));
+        when(stringRedisTemplate.opsForList()).thenReturn(listOperations);
+        when(jobRepository.save(any(JobRecord.class))).thenAnswer(i -> i.getArgument(0));
+
+        JobRecord replayed = taskService.replayDlqJob(jobId);
+
+        assertEquals(JobStatus.QUEUED, replayed.getStatus());
+        assertEquals(0, replayed.getRetryCount());
+        verify(listOperations).remove(TaskService.DLQ_KEY, 1, jobId);
+        verify(listOperations).leftPush(TaskService.ACTIVE_QUEUE_KEY, jobId);
+        verify(jobRepository).save(failedJob);
     }
 }

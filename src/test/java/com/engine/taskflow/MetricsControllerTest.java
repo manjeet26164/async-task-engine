@@ -1,10 +1,12 @@
 package com.engine.taskflow;
 
 import com.engine.taskflow.controller.MetricsController;
+import com.engine.taskflow.model.JobStatus;
 import com.engine.taskflow.repository.JobRepository;
 import com.engine.taskflow.worker.JobWorker;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.data.redis.core.ListOperations;
@@ -22,6 +24,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(MetricsController.class)
+@AutoConfigureMockMvc(addFilters = false)
 public class MetricsControllerTest {
 
     @Autowired
@@ -52,8 +55,8 @@ public class MetricsControllerTest {
         when(listOps.size(JobWorker.DLQ_KEY)).thenReturn(1L);
         when(zsetOps.zCard(JobWorker.DELAYED_QUEUE_KEY)).thenReturn(3L);
 
-        when(jobRepository.countByStatus("COMPLETED")).thenReturn(50L);
-        when(jobRepository.countByStatus("FAILED")).thenReturn(2L);
+        when(jobRepository.countByStatus(JobStatus.COMPLETED)).thenReturn(50L);
+        when(jobRepository.countByStatus(JobStatus.FAILED)).thenReturn(2L);
 
         mockMvc.perform(get("/api/v1/metrics"))
                 .andExpect(status().isOk())
