@@ -358,7 +358,24 @@
                     </h2>
                     <p class="text-xs text-slate-400">Live log of recent task ingestion, state transitions, and retry executions</p>
                 </div>
-                <div class="flex items-center space-x-3 text-xs">
+                <div class="flex items-center flex-wrap gap-2.5 text-xs">
+                    <!-- Pagination Controls -->
+                    <div class="flex items-center space-x-1.5 bg-slate-900/80 border border-slate-800 rounded-lg px-2 py-1">
+                        <button id="prevPageBtn" onclick="changeRecentJobsPage(-1)" disabled class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700/60 disabled:opacity-40 disabled:cursor-not-allowed transition flex items-center gap-1 font-semibold text-xs" title="Previous Page">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+                            </svg>
+                            <span>Prev</span>
+                        </button>
+                        <span id="pageIndicator" class="px-2 font-mono text-slate-300 text-xs select-none">Page 1 of 1</span>
+                        <button id="nextPageBtn" onclick="changeRecentJobsPage(1)" disabled class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700/60 disabled:opacity-40 disabled:cursor-not-allowed transition flex items-center gap-1 font-semibold text-xs" title="Next Page">
+                            <span>Next</span>
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                            </svg>
+                        </button>
+                    </div>
+
                     <label class="flex items-center space-x-1.5 cursor-pointer text-slate-400 hover:text-slate-200">
                         <input type="checkbox" id="autoRefreshToggle" checked class="rounded bg-slate-800 border-slate-700 text-brand-500 focus:ring-0">
                         <span>Auto-refresh (2s)</span>
@@ -727,9 +744,40 @@
             }
         }
 
-        // Fetch Recent Jobs
+        // Pagination state for Recent Jobs
+        let currentRecentPage = 0;
+        const recentPageSize = 20;
+        let totalRecentPages = 1;
+        let totalRecentElements = 0;
+
+        function changeRecentJobsPage(delta) {
+            const targetPage = currentRecentPage + delta;
+            if (targetPage >= 0 && targetPage < totalRecentPages) {
+                currentRecentPage = targetPage;
+                fetchRecentJobs(currentRecentPage, recentPageSize);
+            }
+        }
+
+        function updateRecentPaginationUI(page, totalPages, totalElements) {
+            const pageIndicator = document.getElementById('pageIndicator');
+            const prevBtn = document.getElementById('prevPageBtn');
+            const nextBtn = document.getElementById('nextPageBtn');
+
+            if (pageIndicator) {
+                pageIndicator.innerText = `Page ${page + 1} of ${totalPages || 1}`;
+            }
+            if (prevBtn) {
+                prevBtn.disabled = page <= 0;
+            }
+            if (nextBtn) {
+                nextBtn.disabled = page >= (totalPages - 1);
+            }
+        }
+
+        // Fetch Recent Jobs (Paginated)
         let recentJobsCache = [];
-        async function fetchRecentJobs() {
+        async function fetchRecentJobs(page = currentRecentPage, size = recentPageSize) {
+            currentRecentPage = page;
             const key = getApiKey();
             const tbody = document.getElementById('recentJobsTableBody');
 
@@ -743,11 +791,12 @@
                         </div>
                     </td></tr>`;
                 }
+                updateRecentPaginationUI(0, 1, 0);
                 return;
             }
 
             try {
-                const res = await fetch('/api/v1/jobs/recent', {
+                const res = await fetch(`/api/v1/jobs/recent?page=${page}&size=${size}`, {
                     headers: { 'X-API-KEY': key }
                 });
 
@@ -761,18 +810,34 @@
                             </div>
                         </td></tr>`;
                     }
+                    updateRecentPaginationUI(0, 1, 0);
                     return;
                 }
 
                 if (!res.ok) return;
                 const data = await res.json();
-                const jobs = Array.isArray(data) ? data : (data.content || []);
+
+                // Unpack Spring Page<T> format: { content: [...], totalPages: N, totalElements: M, number: P }
+                let jobs = [];
+                if (Array.isArray(data)) {
+                    jobs = data;
+                    totalRecentPages = 1;
+                    totalRecentElements = jobs.length;
+                    currentRecentPage = 0;
+                } else if (data && typeof data === 'object') {
+                    jobs = data.content || [];
+                    totalRecentPages = Math.max(1, data.totalPages !== undefined ? data.totalPages : 1);
+                    totalRecentElements = data.totalElements !== undefined ? data.totalElements : jobs.length;
+                    currentRecentPage = data.number !== undefined ? data.number : page;
+                }
+
                 recentJobsCache = jobs;
 
-                document.getElementById('jobsCountBadge').innerText = `${jobs.length} jobs`;
+                document.getElementById('jobsCountBadge').innerText = `${totalRecentElements} jobs`;
+                updateRecentPaginationUI(currentRecentPage, totalRecentPages, totalRecentElements);
 
                 if (jobs.length === 0) {
-                    tbody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-slate-500">No jobs submitted yet. Use the form above to ingest tasks.</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-slate-500">No jobs found on this page.</td></tr>`;
                     return;
                 }
 
@@ -807,6 +872,42 @@
                 }).join('');
             } catch (err) {
                 console.error('Failed to fetch recent jobs:', err);
+            }
+        }
+
+        // DLQ Fetch Helper with Pagination
+        let currentDlqPage = 0;
+        const dlqPageSize = 20;
+        let totalDlqPages = 1;
+        let totalDlqElements = 0;
+
+        async function fetchDlqJobs(page = currentDlqPage, size = dlqPageSize) {
+            currentDlqPage = page;
+            const key = getApiKey();
+            if (!key) return null;
+
+            try {
+                const res = await fetch(`/api/v1/jobs/dlq?page=${page}&size=${size}`, {
+                    headers: { 'X-API-KEY': key }
+                });
+                if (!res.ok) return null;
+                const data = await res.json();
+                let jobs = [];
+                if (Array.isArray(data)) {
+                    jobs = data;
+                    totalDlqPages = 1;
+                    totalDlqElements = jobs.length;
+                    currentDlqPage = 0;
+                } else if (data && typeof data === 'object') {
+                    jobs = data.content || [];
+                    totalDlqPages = Math.max(1, data.totalPages !== undefined ? data.totalPages : 1);
+                    totalDlqElements = data.totalElements !== undefined ? data.totalElements : jobs.length;
+                    currentDlqPage = data.number !== undefined ? data.number : page;
+                }
+                return { jobs, totalPages: totalDlqPages, totalElements: totalDlqElements, currentPage: currentDlqPage };
+            } catch (err) {
+                console.error('Failed to fetch DLQ jobs:', err);
+                return null;
             }
         }
 
