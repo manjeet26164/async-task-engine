@@ -128,7 +128,7 @@ Run the provided `docker-compose.yml` to spin up local database and cache instan
 docker-compose up -d
 ```
 This starts:
-- **PostgreSQL 15** on `localhost:5432` (database: `taskdb`, user: `postgres`, password: `password`)
+- **PostgreSQL 15** on `localhost:5433` (database: `taskdb`, user: `postgres`, password: `password`)
 - **Redis 7** on `localhost:6379` (with AOF persistence enabled)
 
 ### 3. Configure Environment Variables
@@ -136,7 +136,7 @@ You can configure the application using environment variables or a `.env` file. 
 
 | Environment Variable | Description | Default Local Value |
 | :--- | :--- | :--- |
-| `SPRING_DATASOURCE_URL` | PostgreSQL JDBC Connection URL | `jdbc:postgresql://localhost:5432/taskdb` |
+| `SPRING_DATASOURCE_URL` | PostgreSQL JDBC Connection URL | `jdbc:postgresql://localhost:5433/taskdb` |
 | `SPRING_DATASOURCE_USERNAME` | PostgreSQL Username | `postgres` |
 | `SPRING_DATASOURCE_PASSWORD` | PostgreSQL Password | `password` |
 | `SPRING_REDIS_HOST` | Redis Host | `localhost` |

@@ -19,7 +19,9 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.eq;
@@ -89,7 +91,7 @@ public class JobWorkerTest {
                 .id(jobId)
                 .idempotencyKey("idemp-fail-1")
                 .taskType("SEND_EMAIL")
-                .payload("{\"error\":\"fail_network\"}")
+                .payload("{\"fail\":true,\"error\":\"fail_network\"}")
                 .status(JobStatus.QUEUED)
                 .retryCount(0)
                 .maxRetries(3)
@@ -126,7 +128,7 @@ public class JobWorkerTest {
                 .id(jobId)
                 .idempotencyKey("idemp-fail-max")
                 .taskType("SEND_EMAIL")
-                .payload("{\"error\":\"fail_permanent\"}")
+                .payload("{\"fail\":true,\"error\":\"fail_permanent\"}")
                 .status(JobStatus.QUEUED)
                 .retryCount(2)
                 .maxRetries(3)
@@ -449,5 +451,63 @@ public class JobWorkerTest {
                 eq(List.of(JobWorker.DELAYED_QUEUE_KEY, JobWorker.ACTIVE_QUEUE_KEY)),
                 any(String.class)
         );
+    }
+
+    @Test
+    void shouldNotThrowWhenPayloadHasFailFalse() {
+        assertDoesNotThrow(() -> jobWorker.simulatePayloadFailure("{\"fail\": false}"));
+        assertDoesNotThrow(() -> jobWorker.simulatePayloadFailure("{\"taskType\":\"PAYMENT\",\"fail\":false}"));
+    }
+
+    @Test
+    void shouldThrowWhenPayloadHasFailTrue() {
+        RuntimeException ex = assertThrows(RuntimeException.class,
+                () -> jobWorker.simulatePayloadFailure("{\"fail\": true}"));
+        assertEquals("Simulated network/system failure triggered by payload", ex.getMessage());
+
+        RuntimeException ex2 = assertThrows(RuntimeException.class,
+                () -> jobWorker.simulatePayloadFailure("{\"taskType\":\"PAYMENT\",\"fail\":true}"));
+        assertEquals("Simulated network/system failure triggered by payload", ex2.getMessage());
+    }
+
+    @Test
+    void shouldNotThrowWhenPayloadHasFailureReasonFieldWithoutFailField() {
+        assertDoesNotThrow(() -> jobWorker.simulatePayloadFailure("{\"failureReason\": \"something\"}"));
+        assertDoesNotThrow(() -> jobWorker.simulatePayloadFailure("{\"failureReason\": \"network timeout\", \"attempt\": 1}"));
+    }
+
+    @Test
+    void shouldNotThrowWhenPayloadHasNoFailRelatedContent() {
+        assertDoesNotThrow(() -> jobWorker.simulatePayloadFailure("{\"userId\": \"user-123\", \"amount\": 250.0}"));
+        assertDoesNotThrow(() -> jobWorker.simulatePayloadFailure("{}"));
+        assertDoesNotThrow(() -> jobWorker.simulatePayloadFailure(null));
+        assertDoesNotThrow(() -> jobWorker.simulatePayloadFailure(""));
+    }
+
+    @Test
+    void shouldNotThrowWhenPayloadIsMalformedJson() {
+        assertDoesNotThrow(() -> jobWorker.simulatePayloadFailure("{malformed json text without closing brace"));
+    }
+
+    @Test
+    void shouldCompleteSuccessfullyWhenPayloadHasFailFalseOrFailureReason() {
+        String jobId = "job-no-false-positive-1";
+        JobRecord jobRecord = JobRecord.builder()
+                .id(jobId)
+                .idempotencyKey("idemp-no-fp-1")
+                .taskType("PAYMENT_GATEWAY")
+                .payload("{\"failureReason\":\"previous_attempt_failed\",\"fail\":false}")
+                .status(JobStatus.QUEUED)
+                .retryCount(0)
+                .maxRetries(3)
+                .build();
+
+        when(jobRepository.findById(jobId)).thenReturn(Optional.of(jobRecord));
+        when(jobRepository.save(any(JobRecord.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        jobWorker.processJob(jobId);
+
+        assertEquals(JobStatus.COMPLETED, jobRecord.getStatus());
+        verify(stringRedisTemplate).delete("idemp:idemp-no-fp-1");
     }
 }

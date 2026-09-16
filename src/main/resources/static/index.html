@@ -72,9 +72,9 @@
 <body class="bg-slate-950 text-slate-100 font-sans min-h-screen flex flex-col antialiased selection:bg-brand-500 selection:text-white">
 
     <!-- Top Navigation Bar -->
-    <header class="sticky top-0 z-50 glass-panel border-b border-slate-800/80 px-6 py-3.5 flex items-center justify-between">
+    <header class="sticky top-0 z-50 glass-panel border-b border-slate-800/80 px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
         <div class="flex items-center space-x-3">
-            <div class="h-9 w-9 rounded-xl bg-gradient-to-tr from-brand-600 to-cyan-400 flex items-center justify-center shadow-lg shadow-brand-500/20">
+            <div class="h-9 w-9 rounded-xl bg-gradient-to-tr from-brand-600 to-cyan-400 flex items-center justify-center shadow-lg shadow-brand-500/20 shrink-0">
                 <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
                 </svg>
@@ -90,11 +90,36 @@
             </div>
         </div>
 
-        <div class="flex items-center space-x-4">
-            <div class="hidden sm:flex items-center text-xs text-slate-400 space-x-3 bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-800">
+        <!-- API Key Configuration & Control Center -->
+        <div class="flex items-center space-x-3 flex-wrap gap-y-2">
+            <!-- API Key Input Field -->
+            <div class="flex flex-col">
+                <div id="apiKeyInputWrapper" class="flex items-center bg-slate-900/90 border border-slate-700 focus-within:border-brand-500 rounded-xl px-2.5 py-1.5 transition shadow-inner">
+                    <span id="apiKeyStatusDot" class="w-2 h-2 rounded-full bg-amber-400 mr-2 shrink-0 animate-pulse" title="API Key Not Configured"></span>
+                    <svg class="w-3.5 h-3.5 text-slate-400 mr-1.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>
+                    </svg>
+                    <input 
+                        type="password" 
+                        id="apiKeyInput" 
+                        placeholder="Must match app.security.api-key in your application.properties" 
+                        title="Must match app.security.api-key in your application.properties"
+                        class="bg-transparent text-xs text-white placeholder-slate-500 focus:outline-none w-56 sm:w-72 md:w-80 font-mono"
+                    />
+                    <button type="button" onclick="toggleApiKeyVisibility()" id="toggleKeyVisibilityBtn" class="text-slate-400 hover:text-slate-200 px-1 text-xs transition" title="Show / Hide API Key">
+                        👁️
+                    </button>
+                    <button type="button" onclick="saveApiKeyFromInput()" id="saveKeyBtn" class="ml-1 px-2.5 py-1 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold transition shadow flex items-center gap-1">
+                        <span>Save</span>
+                    </button>
+                </div>
+                <span class="text-[10px] text-slate-500 mt-0.5 ml-1">Must match <code class="text-slate-400">app.security.api-key</code> in your application.properties</span>
+            </div>
+
+            <div class="hidden lg:flex items-center text-xs text-slate-400 space-x-3 bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-800">
                 <span>Redis: <strong class="text-emerald-400 font-mono">Port 6379</strong></span>
                 <span class="text-slate-600">•</span>
-                <span>Postgres: <strong class="text-cyan-400 font-mono">Port 5432</strong></span>
+                <span>Postgres: <strong class="text-cyan-400 font-mono">Port 5433</strong></span>
                 <span class="text-slate-600">•</span>
                 <span>Backpressure: <strong class="text-amber-400 font-mono">CallerRuns</strong></span>
             </div>
@@ -108,6 +133,24 @@
 
     <!-- Main Container -->
     <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
+
+        <!-- API Key Missing Notification Banner -->
+        <div id="apiKeyBanner" class="hidden glass-panel border border-amber-500/30 bg-amber-500/10 text-amber-200 rounded-2xl p-4 shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div class="flex items-center gap-3">
+                <div class="p-2 rounded-xl bg-amber-500/20 text-amber-400 shrink-0">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h4 class="text-xs font-bold text-amber-300">API Key Required</h4>
+                    <p class="text-xs text-slate-300">Please enter your API key in the top bar above and click Save before submitting tasks or querying telemetry. <em>Must match app.security.api-key in your application.properties</em>.</p>
+                </div>
+            </div>
+            <button onclick="focusApiKeyInput()" class="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs transition shrink-0 shadow">
+                Enter API Key
+            </button>
+        </div>
 
         <!-- 4 Core Stat Cards -->
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -511,15 +554,124 @@
             }
         });
 
-        // API Key configuration
-        const API_KEY = 'taskflow-secret-key-2026';
+        // =========================================================================
+        // API Key Management (Stored in localStorage for persistence)
+        // =========================================================================
+        const STORAGE_KEY = 'taskflow_api_key';
+
+        function getApiKey() {
+            return (localStorage.getItem(STORAGE_KEY) || '').trim();
+        }
+
+        function setApiKey(key) {
+            const trimmed = (key || '').trim();
+            if (trimmed) {
+                localStorage.setItem(STORAGE_KEY, trimmed);
+            } else {
+                localStorage.removeItem(STORAGE_KEY);
+            }
+            updateApiKeyUI();
+        }
+
+        function saveApiKeyFromInput() {
+            const input = document.getElementById('apiKeyInput');
+            const key = input ? input.value.trim() : '';
+            if (!key) {
+                setApiKey('');
+                showToast('error', 'API Key Cleared', 'API key removed from browser storage.');
+            } else {
+                setApiKey(key);
+                showToast('success', 'API Key Saved', 'Key saved in browser localStorage and active for requests.');
+                fetchMetrics();
+                fetchRecentJobs();
+            }
+        }
+
+        function focusApiKeyInput() {
+            const input = document.getElementById('apiKeyInput');
+            const wrapper = document.getElementById('apiKeyInputWrapper');
+            if (input) {
+                input.focus();
+                if (wrapper) {
+                    wrapper.classList.add('ring-2', 'ring-brand-500');
+                    setTimeout(() => wrapper.classList.remove('ring-2', 'ring-brand-500'), 2000);
+                }
+            }
+        }
+
+        function toggleApiKeyVisibility() {
+            const input = document.getElementById('apiKeyInput');
+            const btn = document.getElementById('toggleKeyVisibilityBtn');
+            if (input) {
+                if (input.type === 'password') {
+                    input.type = 'text';
+                    if (btn) btn.innerText = '🔒';
+                } else {
+                    input.type = 'password';
+                    if (btn) btn.innerText = '👁️';
+                }
+            }
+        }
+
+        function updateApiKeyUI() {
+            const key = getApiKey();
+            const input = document.getElementById('apiKeyInput');
+            const banner = document.getElementById('apiKeyBanner');
+            const dot = document.getElementById('apiKeyStatusDot');
+
+            if (input && input.value !== key) {
+                input.value = key;
+            }
+
+            if (banner) {
+                if (!key) {
+                    banner.classList.remove('hidden');
+                } else {
+                    banner.classList.add('hidden');
+                }
+            }
+
+            if (dot) {
+                if (key) {
+                    dot.className = 'w-2 h-2 rounded-full bg-emerald-400 mr-2 shrink-0';
+                    dot.title = 'API Key Configured';
+                } else {
+                    dot.className = 'w-2 h-2 rounded-full bg-amber-400 mr-2 shrink-0 animate-pulse';
+                    dot.title = 'API Key Not Configured';
+                }
+            }
+        }
+
+        // Initialize API Key on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            updateApiKeyUI();
+            const input = document.getElementById('apiKeyInput');
+            if (input) {
+                input.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        saveApiKeyFromInput();
+                    }
+                });
+            }
+        });
 
         // Polling Metrics
         async function fetchMetrics() {
+            const key = getApiKey();
+            if (!key) {
+                updateApiKeyUI();
+                return;
+            }
+
             try {
                 const res = await fetch('/api/v1/metrics', {
-                    headers: { 'X-API-KEY': API_KEY }
+                    headers: { 'X-API-KEY': key }
                 });
+                if (res.status === 401) {
+                    updateApiKeyUI();
+                    return;
+                }
                 if (!res.ok) return;
                 const m = await res.json();
 
@@ -578,17 +730,46 @@
         // Fetch Recent Jobs
         let recentJobsCache = [];
         async function fetchRecentJobs() {
+            const key = getApiKey();
+            const tbody = document.getElementById('recentJobsTableBody');
+
+            if (!key) {
+                if (tbody) {
+                    tbody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-amber-400/90 font-sans">
+                        <div class="flex flex-col items-center justify-center gap-1">
+                            <span class="text-base">⚠️</span>
+                            <span class="font-semibold">API Key Required to Load Jobs</span>
+                            <span class="text-slate-400 text-xs">Enter your API key in the top bar above and click Save.</span>
+                        </div>
+                    </td></tr>`;
+                }
+                return;
+            }
+
             try {
                 const res = await fetch('/api/v1/jobs/recent', {
-                    headers: { 'X-API-KEY': API_KEY }
+                    headers: { 'X-API-KEY': key }
                 });
+
+                if (res.status === 401) {
+                    if (tbody) {
+                        tbody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-rose-400 font-sans">
+                            <div class="flex flex-col items-center justify-center gap-1">
+                                <span class="text-base">⛔</span>
+                                <span class="font-semibold">401 Unauthorized: Invalid API Key</span>
+                                <span class="text-slate-400 text-xs">The key must match <code>app.security.api-key</code> in your application.properties.</span>
+                            </div>
+                        </td></tr>`;
+                    }
+                    return;
+                }
+
                 if (!res.ok) return;
                 const data = await res.json();
                 const jobs = Array.isArray(data) ? data : (data.content || []);
                 recentJobsCache = jobs;
 
                 document.getElementById('jobsCountBadge').innerText = `${jobs.length} jobs`;
-                const tbody = document.getElementById('recentJobsTableBody');
 
                 if (jobs.length === 0) {
                     tbody.innerHTML = `<tr><td colspan="7" class="px-4 py-8 text-center text-slate-500">No jobs submitted yet. Use the form above to ingest tasks.</td></tr>`;
@@ -631,15 +812,24 @@
 
         // Replay DLQ Job
         async function replayJob(jobId) {
+            const key = getApiKey();
+            if (!key) {
+                showToast('error', 'API Key Required', 'Please enter your Admin API key in the top bar before replaying DLQ jobs.');
+                focusApiKeyInput();
+                return;
+            }
+
             try {
                 const res = await fetch(`/api/v1/jobs/dlq/${jobId}/replay`, {
                     method: 'POST',
-                    headers: { 'X-API-KEY': API_KEY }
+                    headers: { 'X-API-KEY': key }
                 });
                 if (res.ok) {
                     showToast('success', 'Job Replayed', `Job ${jobId.substring(0,8)}... requeued to active queue`);
                     fetchMetrics();
                     fetchRecentJobs();
+                } else if (res.status === 403 || res.status === 401) {
+                    showToast('error', 'Admin Key Required (403)', 'DLQ replay requires the Admin API key (app.security.admin-api-key).');
                 } else {
                     const err = await res.json();
                     showToast('error', 'Replay Failed', err.message || 'Unable to replay job');
@@ -652,6 +842,15 @@
         // Job Submission Handler
         async function submitJob(e) {
             e.preventDefault();
+
+            const key = getApiKey();
+            if (!key) {
+                showToast('error', 'API Key Required', 'Please enter your API key in the top bar before submitting jobs. Must match app.security.api-key.');
+                focusApiKeyInput();
+                updateApiKeyUI();
+                return;
+            }
+
             const btn = document.getElementById('submitJobBtn');
             btn.disabled = true;
             btn.classList.add('opacity-70');
@@ -667,7 +866,7 @@
                     headers: {
                         'Content-Type': 'application/json',
                         'Idempotency-Key': idempKey,
-                        'X-API-KEY': API_KEY
+                        'X-API-KEY': key
                     },
                     body: JSON.stringify({
                         taskType: taskType,
@@ -683,6 +882,9 @@
                     generateNewKey();
                     fetchMetrics();
                     fetchRecentJobs();
+                } else if (res.status === 401) {
+                    showToast('error', 'Unauthorized (401)', 'Invalid API key. Must match app.security.api-key in your application.properties.');
+                    focusApiKeyInput();
                 } else if (res.status === 409) {
                     showToast('error', 'Idempotency Conflict (409)', data.message || 'Duplicate key detected');
                 } else {

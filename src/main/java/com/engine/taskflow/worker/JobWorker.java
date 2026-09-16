@@ -4,9 +4,12 @@ import com.engine.taskflow.model.JobRecord;
 import com.engine.taskflow.model.JobStatus;
 import com.engine.taskflow.repository.JobRepository;
 import com.engine.taskflow.service.TaskService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -50,6 +53,7 @@ public class JobWorker {
     private final StringRedisTemplate stringRedisTemplate;
     private final JobRepository jobRepository;
     private final ExecutorService workerThreadPool;
+    private final ObjectMapper objectMapper;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final String workerId;
     private Thread pollingThread;
@@ -57,11 +61,33 @@ public class JobWorker {
     @Value("${app.worker.stuck-timeout-seconds:300}")
     private long stuckTimeoutSeconds = 300L;
 
+    @Autowired
     public JobWorker(
             StringRedisTemplate stringRedisTemplate,
             JobRepository jobRepository,
-            @Qualifier("workerThreadPool") ExecutorService workerThreadPool) {
-        this(stringRedisTemplate, jobRepository, workerThreadPool, "worker-" + UUID.randomUUID());
+            @Qualifier("workerThreadPool") ExecutorService workerThreadPool,
+            ObjectMapper objectMapper) {
+        this(stringRedisTemplate, jobRepository, workerThreadPool, objectMapper, "worker-" + UUID.randomUUID());
+    }
+
+    public JobWorker(
+            StringRedisTemplate stringRedisTemplate,
+            JobRepository jobRepository,
+            ExecutorService workerThreadPool,
+            ObjectMapper objectMapper,
+            String workerId) {
+        this.stringRedisTemplate = stringRedisTemplate;
+        this.jobRepository = jobRepository;
+        this.workerThreadPool = workerThreadPool;
+        this.objectMapper = objectMapper;
+        this.workerId = workerId;
+    }
+
+    public JobWorker(
+            StringRedisTemplate stringRedisTemplate,
+            JobRepository jobRepository,
+            ExecutorService workerThreadPool) {
+        this(stringRedisTemplate, jobRepository, workerThreadPool, new ObjectMapper());
     }
 
     public JobWorker(
@@ -69,10 +95,7 @@ public class JobWorker {
             JobRepository jobRepository,
             ExecutorService workerThreadPool,
             String workerId) {
-        this.stringRedisTemplate = stringRedisTemplate;
-        this.jobRepository = jobRepository;
-        this.workerThreadPool = workerThreadPool;
-        this.workerId = workerId;
+        this(stringRedisTemplate, jobRepository, workerThreadPool, new ObjectMapper(), workerId);
     }
 
     public String getWorkerId() {
@@ -250,10 +273,8 @@ public class JobWorker {
             // Step 2: Simulate work with 500ms sleep
             Thread.sleep(500);
 
-            // Step 3: Simulate failure if payload contains "fail"
-            if (job.getPayload() != null && job.getPayload().contains("fail")) {
-                throw new RuntimeException("Simulated network/system failure triggered by payload");
-            }
+            // Step 3: Simulate failure if payload indicates "fail": true
+            simulatePayloadFailure(job.getPayload());
 
             // Step 4: Before writing final COMPLETED status, re-fetch and verify leaseVersion
             Optional<JobRecord> currentJobOpt = jobRepository.findById(jobId);
@@ -332,5 +353,43 @@ public class JobWorker {
 
     public void setStuckTimeoutSeconds(long stuckTimeoutSeconds) {
         this.stuckTimeoutSeconds = stuckTimeoutSeconds;
+    }
+
+    /**
+     * Evaluates whether a failure should be simulated based on the payload JSON.
+     * Parses the payload using Jackson ObjectMapper, checking the actual boolean value of the "fail" field.
+     * Defaults to false if the field is absent, non-boolean, or if the payload is malformed/not valid JSON
+     * (logging a warning instead of failing).
+     *
+     * @param payload the job payload string
+     * @return true if payload is valid JSON and "fail" field evaluates to boolean true, false otherwise
+     */
+    public boolean shouldSimulateFailure(String payload) {
+        if (payload == null || payload.isBlank()) {
+            return false;
+        }
+        try {
+            JsonNode rootNode = objectMapper.readTree(payload);
+            if (rootNode != null && rootNode.has("fail")) {
+                JsonNode failNode = rootNode.get("fail");
+                return failNode != null && failNode.asBoolean(false);
+            }
+            return false;
+        } catch (Exception e) {
+            log.warn("Failed to parse job payload as JSON when evaluating failure condition: {}. Defaulting to fail=false.", e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Throws a simulated RuntimeException if the payload contains "fail": true.
+     *
+     * @param payload the job payload string
+     * @throws RuntimeException if simulated failure is triggered
+     */
+    public void simulatePayloadFailure(String payload) {
+        if (shouldSimulateFailure(payload)) {
+            throw new RuntimeException("Simulated network/system failure triggered by payload");
+        }
     }
 }
