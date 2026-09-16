@@ -19,10 +19,10 @@
                                       └──────────────┬───────────────┘
                                                      │
                                                      ▼
-                                      ┌──────────────────────────────┐
-                                      │   Redis Idempotency Guard    │
-                                      │    SETNX idemp:<key> (60s)   │
-                                      └──────────────┬───────────────┘
+                                       ┌──────────────────────────────┐
+                                       │   Redis Idempotency Guard    │
+                                       │   SETNX idemp:<key> (24h)    │
+                                       └──────────────┬───────────────┘
                                                      │
                           ┌──────────────────────────┴──────────────────────────┐
                           ▼                                                     ▼
@@ -83,7 +83,8 @@
 ## 🌟 Core Distributed Systems Patterns
 
 1. **Request Idempotency & Deduplication**:
-   - Enforced via Redis `SETNX` on key `idemp:<idempotency_key>` with a 60-second TTL.
+   - Enforced via Redis `SETNX` on key `idemp:<idempotency_key>` with a 24-hour safety-net TTL.
+   - The idempotency key is explicitly released/deleted only when the job reaches a terminal state (`COMPLETED` or `FAILED`/DLQ), ensuring jobs retrying with exponential backoff remain strictly deduplicated while in-flight.
    - Prevents duplicate job execution when client networks retry or drop connections.
 
 2. **Bounded Concurrency & Backpressure**:
@@ -106,10 +107,12 @@
    - Poison-pill jobs exceeding max retries are routed to `jobs:queue:dlq` and marked as `FAILED`.
    - Provides admin endpoints to inspect DLQ payloads and replay failed tasks with a clean state.
 
-7. **API Robustness & Key Security**:
-   - Enforces Jakarta Bean Validation (`@NotBlank`, `@Size`, `@Positive`) on payload DTOs.
-   - Centralized `GlobalExceptionHandler` ensures uniform, sanitized JSON responses without exposing raw stack traces.
-   - API endpoints are protected with a stateless `X-API-KEY` header filter.
+7. **Role-Based API Security (RBAC)**:
+   - Enforces Jakarta Bean Validation (`@NotBlank`, `@Size`, `@Positive`) on payload DTOs with centralized error sanitization.
+   - Protected with a stateless `X-API-KEY` header filter using constant-time verification (`MessageDigest.isEqual`).
+   - Supports two distinct privilege tiers:
+     - **Regular User (`ROLE_API_USER`)**: Authorizes job submission, status lookups, and telemetry (`/submit`, `/recent`, `/{id}`, `/metrics`).
+     - **Admin (`ROLE_ADMIN` & `ROLE_API_USER`)**: Required for privileged Dead Letter Queue management and replays (`/api/v1/jobs/dlq/**`).
 
 ---
 
@@ -140,20 +143,26 @@ You can configure the application using environment variables or a `.env` file. 
 | `SPRING_REDIS_PORT` | Redis Port | `6379` |
 | `SPRING_REDIS_PASSWORD` | Redis Password | `(empty)` |
 | `SPRING_REDIS_SSL` | Enable Redis SSL/TLS (for Upstash) | `false` |
-| `APP_SECURITY_API_KEY` | API Key for `/api/v1/**` endpoints | `taskflow-secret-key-2026` |
+| `APP_SECURITY_API_KEY` | API Key for regular client endpoints (`/submit`, `/recent`, `/{id}`, `/metrics`) | **REQUIRED (no default - fail-fast at startup)** |
+| `APP_SECURITY_ADMIN_API_KEY` | Admin API Key for privileged DLQ endpoints (`/api/v1/jobs/dlq/**`) | **REQUIRED (no default - fail-fast at startup)** |
 | `APP_WORKER_STUCK_TIMEOUT_SECONDS` | Lease timeout for RUNNING jobs | `300` |
 | `APP_WORKER_RECOVERY_INTERVAL_MS` | Stuck job scan frequency | `60000` |
 
-#### Example: Running with custom environment variables
+> [!IMPORTANT]
+> Both `APP_SECURITY_API_KEY` and `APP_SECURITY_ADMIN_API_KEY` are **REQUIRED** with no default values. The engine validates these properties at startup and will fail fast with an error if either is missing or blank.
+
+#### Example: Running with environment variables
 ```powershell
 # In PowerShell:
-$env:APP_SECURITY_API_KEY="my-custom-production-key"
+$env:APP_SECURITY_API_KEY="<your-user-api-key>"
+$env:APP_SECURITY_ADMIN_API_KEY="<your-admin-api-key>"
 $env:SPRING_DATASOURCE_PASSWORD="mysecretpassword"
 .\mvnw spring-boot:run
 ```
 ```bash
 # In Linux / macOS:
-export APP_SECURITY_API_KEY="my-custom-production-key"
+export APP_SECURITY_API_KEY="<your-user-api-key>"
+export APP_SECURITY_ADMIN_API_KEY="<your-admin-api-key>"
 export SPRING_DATASOURCE_PASSWORD="mysecretpassword"
 ./mvnw spring-boot:run
 ```
@@ -173,17 +182,51 @@ Open your browser to:
 
 ---
 
+## 🗄️ Database Migrations (Flyway)
+
+TaskFlow uses **Flyway** for version-controlled, production-safe schema migrations. Hibernate's schema generation is set to `spring.jpa.hibernate.ddl-auto=validate` to prevent accidental or unreviewed schema drift in production.
+
+### Migration Files
+All migration scripts reside in:
+```text
+src/main/resources/db/migration/
+```
+
+### Adding New Migrations Going Forward
+1. **Naming Convention**:
+   Create a new `.sql` file following Flyway's versioning pattern: `V<Version>__<Description>.sql` (note the **double underscore** `__`).
+   - Example: `V2__add_priority_to_job_records.sql`
+   - Example: `V3__create_audit_log_table.sql`
+
+2. **Write Pure SQL**:
+   Write standard PostgreSQL DDL statements:
+   ```sql
+   ALTER TABLE job_records ADD COLUMN IF NOT EXISTS priority INT DEFAULT 0 NOT NULL;
+   CREATE INDEX IF NOT EXISTS idx_job_records_priority ON job_records(priority);
+   ```
+
+3. **Synchronize JPA Entities**:
+   Update corresponding entity classes (such as `JobRecord.java`) with matching `@Column` definitions. Since `ddl-auto=validate` is enabled, Hibernate verifies entity-to-table parity at startup and will fail fast if any mismatch is detected.
+
+4. **Execution**:
+   Migrations execute automatically on application startup prior to Hibernate initialization.
+
+---
+
 ## 📡 API Reference
 
 All `/api/v1/**` endpoints require the header:
-`X-API-KEY: taskflow-secret-key-2026`
+`X-API-KEY: <your-configured-api-key>`
+
+- **Standard Operations** (`/submit`, `/recent`, `/{id}`, `/metrics`): Accept either `APP_SECURITY_API_KEY` or `APP_SECURITY_ADMIN_API_KEY`.
+- **Privileged DLQ Operations** (`/api/v1/jobs/dlq/**`): Strictly require `APP_SECURITY_ADMIN_API_KEY`.
 
 ### 1. Ingest / Submit a Job
 - **Endpoint**: `POST /api/v1/jobs/submit`
 - **Headers**:
   - `Content-Type: application/json`
   - `Idempotency-Key: <unique-uuid-or-string>` (Required)
-  - `X-API-KEY: taskflow-secret-key-2026` (Required)
+  - `X-API-KEY: <your-configured-api-key>` (Required)
 - **Request Body**:
 ```json
 {
@@ -237,25 +280,78 @@ All `/api/v1/**` endpoints require the header:
 }
 ```
 
-### 4. Fetch Dead Letter Queue (DLQ)
-- **Endpoint**: `GET /api/v1/jobs/dlq`
+### 4. Fetch Recent Jobs (Paginated)
+- **Endpoint**: `GET /api/v1/jobs/recent`
+- **Query Parameters (Optional)**:
+  - `page` (integer, default: `0`): Zero-based page index.
+  - `size` (integer, default: `20`): Maximum page size.
 - **Response (`200 OK`)**:
 ```json
-[
-  {
-    "id": "f8173abc-9421-4d1a-821b-6b27814917a1",
-    "idempotencyKey": "load-test-failed-12",
-    "taskType": "PAYMENT_GATEWAY",
-    "payload": "{\"fail\": true}",
-    "status": "FAILED",
-    "retryCount": 3,
-    "maxRetries": 3
-  }
-]
+{
+  "content": [
+    {
+      "id": "c62a884d-2a62-43cf-bf2b-986c77840139",
+      "idempotencyKey": "order-101-payment",
+      "taskType": "IMAGE_PROCESSING",
+      "payload": "{\"fileUrl\": \"https://example.com/asset.png\"}",
+      "status": "COMPLETED",
+      "retryCount": 0,
+      "maxRetries": 3,
+      "workerId": "worker-491a-b32c",
+      "leaseVersion": 1,
+      "createdAt": "2026-09-13T00:20:00",
+      "updatedAt": "2026-09-13T00:20:01"
+    }
+  ],
+  "pageable": {
+    "pageNumber": 0,
+    "pageSize": 20
+  },
+  "totalElements": 1,
+  "totalPages": 1,
+  "number": 0,
+  "size": 20
+}
 ```
 
-### 5. Replay a DLQ Job
+### 5. Fetch Dead Letter Queue (DLQ) (Paginated)
+- **Endpoint**: `GET /api/v1/jobs/dlq`
+- **Authorization**: **Admin Only** (requires `X-API-KEY: <APP_SECURITY_ADMIN_API_KEY>`)
+- **Query Parameters (Optional)**:
+  - `page` (integer, default: `0`): Zero-based page index.
+  - `size` (integer, default: `20`): Maximum page size.
+- **Response (`200 OK`)**:
+```json
+{
+  "content": [
+    {
+      "id": "f8173abc-9421-4d1a-821b-6b27814917a1",
+      "idempotencyKey": "load-test-failed-12",
+      "taskType": "PAYMENT_GATEWAY",
+      "payload": "{\"fail\": true}",
+      "status": "FAILED",
+      "retryCount": 3,
+      "maxRetries": 3,
+      "workerId": "worker-491a-b32c",
+      "leaseVersion": 3,
+      "createdAt": "2026-09-13T00:20:00",
+      "updatedAt": "2026-09-13T00:25:00"
+    }
+  ],
+  "pageable": {
+    "pageNumber": 0,
+    "pageSize": 20
+  },
+  "totalElements": 1,
+  "totalPages": 1,
+  "number": 0,
+  "size": 20
+}
+```
+
+### 6. Replay a DLQ Job
 - **Endpoint**: `POST /api/v1/jobs/dlq/{id}/replay`
+- **Authorization**: **Admin Only** (requires `X-API-KEY: <APP_SECURITY_ADMIN_API_KEY>`)
 - **Response (`200 OK`)**:
 ```json
 {
@@ -265,7 +361,7 @@ All `/api/v1/**` endpoints require the header:
 }
 ```
 
-### 6. Real-Time Telemetry & Engine Metrics
+### 7. Real-Time Telemetry & Engine Metrics
 - **Endpoint**: `GET /api/v1/metrics`
 - **Response (`200 OK`)**:
 ```json
@@ -290,13 +386,13 @@ All `/api/v1/**` endpoints require the header:
 Run the included load simulator to fire 200 concurrent tasks (with a simulated failure rate) to observe real-time backpressure and queue consumption:
 
 ```powershell
-# PowerShell
-.\simulate_load.ps1 -TotalRequests 200 -Concurrency 50
+# PowerShell (pass your configured API key)
+.\simulate_load.ps1 -ApiKey "<your-configured-api-key>" -TotalRequests 200 -Concurrency 50
 ```
 
 ```bash
-# Bash
-./simulate_load.sh http://localhost:8080/api/v1/jobs/submit taskflow-secret-key-2026
+# Bash (pass your configured API key)
+./simulate_load.sh http://localhost:8080/api/v1/jobs/submit <your-configured-api-key>
 ```
 
 ---

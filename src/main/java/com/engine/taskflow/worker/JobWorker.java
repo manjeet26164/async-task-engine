@@ -3,6 +3,7 @@ package com.engine.taskflow.worker;
 import com.engine.taskflow.model.JobRecord;
 import com.engine.taskflow.model.JobStatus;
 import com.engine.taskflow.repository.JobRepository;
+import com.engine.taskflow.service.TaskService;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
@@ -17,6 +18,7 @@ import org.springframework.stereotype.Component;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -30,6 +32,8 @@ public class JobWorker {
     public static final String DELAYED_QUEUE_KEY = "jobs:queue:delayed";
     private static final long POLL_TIMEOUT_SECONDS = 2L;
     private static final long MAX_BACKOFF_SECONDS = 300L;
+    private static final int FIND_JOB_MAX_ATTEMPTS = 3;
+    private static final long FIND_JOB_RETRY_DELAY_MS = 100L;
 
     private static final String MOVE_DELAYED_JOBS_LUA =
             "local jobs = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, 100)\n" +
@@ -47,6 +51,7 @@ public class JobWorker {
     private final JobRepository jobRepository;
     private final ExecutorService workerThreadPool;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final String workerId;
     private Thread pollingThread;
 
     @Value("${app.worker.stuck-timeout-seconds:300}")
@@ -56,9 +61,22 @@ public class JobWorker {
             StringRedisTemplate stringRedisTemplate,
             JobRepository jobRepository,
             @Qualifier("workerThreadPool") ExecutorService workerThreadPool) {
+        this(stringRedisTemplate, jobRepository, workerThreadPool, "worker-" + UUID.randomUUID());
+    }
+
+    public JobWorker(
+            StringRedisTemplate stringRedisTemplate,
+            JobRepository jobRepository,
+            ExecutorService workerThreadPool,
+            String workerId) {
         this.stringRedisTemplate = stringRedisTemplate;
         this.jobRepository = jobRepository;
         this.workerThreadPool = workerThreadPool;
+        this.workerId = workerId;
+    }
+
+    public String getWorkerId() {
+        return workerId;
     }
 
     /**
@@ -107,22 +125,36 @@ public class JobWorker {
 
     private void recoverOrphanedJob(JobRecord job) {
         String jobId = job.getId();
-        int updatedRetryCount = job.getRetryCount() + 1;
-        job.setRetryCount(updatedRetryCount);
-        int maxRetries = job.getMaxRetries() > 0 ? job.getMaxRetries() : 3;
+        int expectedVersion = job.getLeaseVersion();
+
+        Optional<JobRecord> currentJobOpt = jobRepository.findById(jobId);
+        if (currentJobOpt.isEmpty() || currentJobOpt.get().getLeaseVersion() != expectedVersion) {
+            log.warn("Watchdog recovery for job {} superseded. Expected leaseVersion {}, found {}. Skipping recovery.",
+                    jobId, expectedVersion,
+                    currentJobOpt.map(j -> String.valueOf(j.getLeaseVersion())).orElse("NOT_FOUND"));
+            return;
+        }
+
+        JobRecord currentJob = currentJobOpt.get();
+        int updatedRetryCount = currentJob.getRetryCount() + 1;
+        currentJob.setRetryCount(updatedRetryCount);
+        currentJob.setLeaseVersion(currentJob.getLeaseVersion() + 1);
+        currentJob.setWorkerId(null);
+        int maxRetries = currentJob.getMaxRetries() > 0 ? currentJob.getMaxRetries() : 3;
 
         if (updatedRetryCount >= maxRetries) {
-            job.setStatus(JobStatus.FAILED);
-            jobRepository.save(job);
+            currentJob.setStatus(JobStatus.FAILED);
+            jobRepository.save(currentJob);
             stringRedisTemplate.opsForList().leftPush(DLQ_KEY, jobId);
+            clearIdempotencyKey(currentJob);
             log.error("Stuck job {} exceeded max retries ({}/{}). Marked as FAILED and routed to DLQ",
                     jobId, updatedRetryCount, maxRetries);
         } else {
-            job.setStatus(JobStatus.QUEUED);
-            jobRepository.save(job);
+            currentJob.setStatus(JobStatus.QUEUED);
+            jobRepository.save(currentJob);
             stringRedisTemplate.opsForList().leftPush(ACTIVE_QUEUE_KEY, jobId);
-            log.warn("Stuck job {} recovered (retry {}/{}). Re-queued to active queue",
-                    jobId, updatedRetryCount, maxRetries);
+            log.warn("Stuck job {} recovered (retry {}/{}). Bumped leaseVersion to {}. Re-queued to active queue",
+                    jobId, updatedRetryCount, maxRetries, currentJob.getLeaseVersion());
         }
     }
 
@@ -178,19 +210,42 @@ public class JobWorker {
         String threadName = Thread.currentThread().getName();
         log.info("[{}] Starting processing for job: {}", threadName, jobId);
 
-        Optional<JobRecord> optionalJob = jobRepository.findById(jobId);
+        Optional<JobRecord> optionalJob = Optional.empty();
+        for (int attempt = 1; attempt <= FIND_JOB_MAX_ATTEMPTS; attempt++) {
+            optionalJob = jobRepository.findById(jobId);
+            if (optionalJob.isPresent()) {
+                break;
+            }
+            if (attempt < FIND_JOB_MAX_ATTEMPTS) {
+                log.warn("[{}] Job record not found in PostgreSQL on attempt {}/{} for jobId: {}. Retrying in {}ms...",
+                        threadName, attempt, FIND_JOB_MAX_ATTEMPTS, jobId, FIND_JOB_RETRY_DELAY_MS);
+                try {
+                    Thread.sleep(FIND_JOB_RETRY_DELAY_MS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    log.warn("[{}] Interrupted while waiting to retry findById for jobId: {}", threadName, jobId);
+                    break;
+                }
+            }
+        }
+
         if (optionalJob.isEmpty()) {
-            log.warn("[{}] Job record not found in PostgreSQL for jobId: {}", threadName, jobId);
+            log.warn("[{}] Job record not found in PostgreSQL after {} attempts for jobId: {}",
+                    threadName, FIND_JOB_MAX_ATTEMPTS, jobId);
             return;
         }
 
         JobRecord job = optionalJob.get();
+        int assignedLeaseVersion = job.getLeaseVersion() + 1;
 
         try {
-            // Step 1: Update job status in PostgreSQL to RUNNING
+            // Step 1: Update job status in PostgreSQL to RUNNING and claim lease
             job.setStatus(JobStatus.RUNNING);
+            job.setWorkerId(this.workerId);
+            job.setLeaseVersion(assignedLeaseVersion);
             jobRepository.save(job);
-            log.info("[{}] Job {} marked as RUNNING in PostgreSQL", threadName, jobId);
+            log.info("[{}] Job {} marked as RUNNING by worker {} with leaseVersion {}",
+                    threadName, jobId, this.workerId, assignedLeaseVersion);
 
             // Step 2: Simulate work with 500ms sleep
             Thread.sleep(500);
@@ -200,42 +255,78 @@ public class JobWorker {
                 throw new RuntimeException("Simulated network/system failure triggered by payload");
             }
 
-            // Step 4: On success: set status to COMPLETED
-            job.setStatus(JobStatus.COMPLETED);
-            jobRepository.save(job);
+            // Step 4: Before writing final COMPLETED status, re-fetch and verify leaseVersion
+            Optional<JobRecord> currentJobOpt = jobRepository.findById(jobId);
+            if (currentJobOpt.isEmpty() || currentJobOpt.get().getLeaseVersion() != assignedLeaseVersion) {
+                log.warn("[{}] Job {} completion attempt superseded. Expected leaseVersion {}, found {}. Skipping DB update.",
+                        threadName, jobId, assignedLeaseVersion,
+                        currentJobOpt.map(j -> String.valueOf(j.getLeaseVersion())).orElse("NOT_FOUND"));
+                return;
+            }
+
+            JobRecord currentJob = currentJobOpt.get();
+            currentJob.setStatus(JobStatus.COMPLETED);
+            jobRepository.save(currentJob);
             log.info("[{}] Job {} completed successfully. Marked as COMPLETED in PostgreSQL", threadName, jobId);
+
+            // Explicitly release idempotency key when job reaches terminal COMPLETED state
+            clearIdempotencyKey(currentJob);
 
         } catch (Exception ex) {
             log.error("[{}] Error executing job {}: {}", threadName, jobId, ex.getMessage());
-            handleJobFailure(job, ex);
+            handleJobFailure(jobId, assignedLeaseVersion, ex);
         }
     }
 
-    private void handleJobFailure(JobRecord job, Exception ex) {
+    private void handleJobFailure(String jobId, int assignedLeaseVersion, Exception ex) {
         String threadName = Thread.currentThread().getName();
-        String jobId = job.getId();
-        int updatedRetryCount = job.getRetryCount() + 1;
-        job.setRetryCount(updatedRetryCount);
 
-        int maxRetries = job.getMaxRetries() > 0 ? job.getMaxRetries() : 3;
+        // Before writing final FAILED or SCHEDULED status, re-fetch and verify leaseVersion
+        Optional<JobRecord> currentJobOpt = jobRepository.findById(jobId);
+        if (currentJobOpt.isEmpty() || currentJobOpt.get().getLeaseVersion() != assignedLeaseVersion) {
+            log.warn("[{}] Job {} failure handling superseded. Expected leaseVersion {}, found {}. Skipping DB update.",
+                    threadName, jobId, assignedLeaseVersion,
+                    currentJobOpt.map(j -> String.valueOf(j.getLeaseVersion())).orElse("NOT_FOUND"));
+            return;
+        }
+
+        JobRecord currentJob = currentJobOpt.get();
+        int updatedRetryCount = currentJob.getRetryCount() + 1;
+        currentJob.setRetryCount(updatedRetryCount);
+
+        int maxRetries = currentJob.getMaxRetries() > 0 ? currentJob.getMaxRetries() : 3;
 
         if (updatedRetryCount >= maxRetries) {
-            job.setStatus(JobStatus.FAILED);
-            jobRepository.save(job);
+            currentJob.setStatus(JobStatus.FAILED);
+            jobRepository.save(currentJob);
             stringRedisTemplate.opsForList().leftPush(DLQ_KEY, jobId);
+            clearIdempotencyKey(currentJob);
             log.error("[{}] Job {} reached max retries ({}/{}). Marked as FAILED and routed to DLQ [{}]",
                     threadName, jobId, updatedRetryCount, maxRetries, DLQ_KEY);
         } else {
             // Exponential backoff: 2^retryCount seconds (e.g. 2s, 4s, 8s...) capped at MAX_BACKOFF_SECONDS
             long backoffDelaySeconds = (long) Math.min(MAX_BACKOFF_SECONDS, Math.pow(2, updatedRetryCount));
-            job.setStatus(JobStatus.SCHEDULED);
-            jobRepository.save(job);
+            currentJob.setStatus(JobStatus.SCHEDULED);
+            jobRepository.save(currentJob);
 
             double executeAt = (double) (System.currentTimeMillis() + (backoffDelaySeconds * 1000L));
             stringRedisTemplate.opsForZSet().add(DELAYED_QUEUE_KEY, jobId, executeAt);
 
             log.warn("[{}] Job {} failed (retry {}/{}). Exponential backoff delay {}s. Scheduled in Redis ZSET [{}]",
                     threadName, jobId, updatedRetryCount, maxRetries, backoffDelaySeconds, DELAYED_QUEUE_KEY);
+        }
+    }
+
+    private void clearIdempotencyKey(JobRecord job) {
+        if (job != null && job.getIdempotencyKey() != null && !job.getIdempotencyKey().isBlank()) {
+            String idempKey = TaskService.IDEMPOTENCY_KEY_PREFIX + job.getIdempotencyKey();
+            try {
+                stringRedisTemplate.delete(idempKey);
+                log.info("Released idempotency key [{}] for job {} in terminal state [{}]",
+                        idempKey, job.getId(), job.getStatus());
+            } catch (Exception e) {
+                log.error("Failed to delete idempotency key [{}] for job {}: {}", idempKey, job.getId(), e.getMessage());
+            }
         }
     }
 

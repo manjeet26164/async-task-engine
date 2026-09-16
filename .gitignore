@@ -59,6 +59,7 @@ src/main/resources/application.yml
 src/main/resources/application.yaml
 !application.properties.example
 !src/main/resources/application.properties.example
+!src/test/resources/application.properties
 application-local.properties
 application-local.yml
 application-local.yaml

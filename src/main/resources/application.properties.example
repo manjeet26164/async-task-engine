@@ -14,7 +14,7 @@ spring.datasource.hikari.connection-timeout=30000
 spring.datasource.hikari.maximum-pool-size=10
 
 # JPA / Hibernate Configuration
-spring.jpa.hibernate.ddl-auto=update
+spring.jpa.hibernate.ddl-auto=validate
 spring.jpa.show-sql=false
 spring.jpa.open-in-view=false
 spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
@@ -25,8 +25,11 @@ spring.data.redis.port=${SPRING_REDIS_PORT:6379}
 spring.data.redis.password=${SPRING_REDIS_PASSWORD:}
 spring.data.redis.ssl.enabled=${SPRING_REDIS_SSL:false}
 
-# Application Security (API-Key protection for /api/v1/**)
-app.security.api-key=${APP_SECURITY_API_KEY:taskflow-secret-key-2026}
+# Application Security (API-Key protection for /api/v1/**) - REQUIRED
+# Both APP_SECURITY_API_KEY and APP_SECURITY_ADMIN_API_KEY are REQUIRED (no default values).
+# The application will fail fast at startup if either is missing or blank.
+app.security.api-key=${APP_SECURITY_API_KEY}
+app.security.admin-api-key=${APP_SECURITY_ADMIN_API_KEY}
 
 # Worker Recovery & Lease Management
 app.worker.stuck-timeout-seconds=${APP_WORKER_STUCK_TIMEOUT_SECONDS:300}

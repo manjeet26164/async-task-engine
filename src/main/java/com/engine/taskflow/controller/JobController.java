@@ -7,6 +7,9 @@ import com.engine.taskflow.service.TaskService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -15,9 +18,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/jobs")
@@ -61,8 +63,11 @@ public class JobController {
     }
 
     @GetMapping("/recent")
-    public ResponseEntity<List<JobRecord>> getRecentJobs() {
-        return ResponseEntity.ok(taskService.getRecentJobs());
+    public ResponseEntity<Page<JobRecord>> getRecentJobs(
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "20") int size) {
+        Pageable pageable = PageRequest.of(Math.max(0, page), size <= 0 ? 20 : size);
+        return ResponseEntity.ok(taskService.getRecentJobs(pageable));
     }
 
     @GetMapping("/{id}")
@@ -73,8 +78,11 @@ public class JobController {
     }
 
     @GetMapping("/dlq")
-    public ResponseEntity<List<JobRecord>> getDlqJobs() {
-        return ResponseEntity.ok(taskService.getDlqJobs());
+    public ResponseEntity<Page<JobRecord>> getDlqJobs(
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "20") int size) {
+        Pageable pageable = PageRequest.of(Math.max(0, page), size <= 0 ? 20 : size);
+        return ResponseEntity.ok(taskService.getDlqJobs(pageable));
     }
 
     @PostMapping("/dlq/{id}/replay")

@@ -59,6 +59,13 @@ public class JobRecord {
     @Builder.Default
     private int maxRetries = 3;
 
+    @Column(name = "worker_id")
+    private String workerId;
+
+    @Column(name = "lease_version", nullable = false)
+    @Builder.Default
+    private int leaseVersion = 0;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 

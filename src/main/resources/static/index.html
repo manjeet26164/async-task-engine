@@ -583,7 +583,8 @@
                     headers: { 'X-API-KEY': API_KEY }
                 });
                 if (!res.ok) return;
-                const jobs = await res.json();
+                const data = await res.json();
+                const jobs = Array.isArray(data) ? data : (data.content || []);
                 recentJobsCache = jobs;
 
                 document.getElementById('jobsCountBadge').innerText = `${jobs.length} jobs`;

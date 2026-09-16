@@ -6,9 +6,16 @@ import com.engine.taskflow.model.JobStatus;
 import com.engine.taskflow.repository.JobRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Duration;
 import java.util.Collections;
@@ -25,7 +32,7 @@ public class TaskService {
 
     public static final String IDEMPOTENCY_KEY_PREFIX = "idemp:";
     public static final String IDEMPOTENCY_LOCKED_VALUE = "LOCKED";
-    public static final Duration IDEMPOTENCY_TTL = Duration.ofSeconds(60);
+    public static final Duration IDEMPOTENCY_TTL = Duration.ofHours(24);
     public static final String ACTIVE_QUEUE_KEY = "jobs:queue:active";
     public static final String DELAYED_QUEUE_KEY = "jobs:queue:delayed";
     public static final String DLQ_KEY = "jobs:queue:dlq";
@@ -35,7 +42,8 @@ public class TaskService {
 
     /**
      * Submits a job by enforcing idempotency via Redis SETNX, saving the initial
-     * record in PostgreSQL with status QUEUED, and pushing the jobId to the active Redis list.
+     * record in PostgreSQL with status QUEUED, and pushing the jobId to the active Redis list
+     * ONLY after the database transaction commits.
      *
      * @param idempotencyKey unique idempotency token
      * @param taskType type of task
@@ -70,9 +78,11 @@ public class TaskService {
         JobRecord savedRecord = jobRepository.save(jobRecord);
         String jobId = savedRecord.getId();
 
-        // Step c: Push the jobId to Redis List "jobs:queue:active" using LPUSH
-        stringRedisTemplate.opsForList().leftPush(ACTIVE_QUEUE_KEY, jobId);
-        log.info("Job successfully submitted and enqueued. jobId={}, taskType={}", jobId, taskType);
+        // Step c: Push the jobId to Redis List "jobs:queue:active" using LPUSH only after the DB transaction commits
+        executeAfterTransactionCommit(() -> {
+            stringRedisTemplate.opsForList().leftPush(ACTIVE_QUEUE_KEY, jobId);
+            log.info("Job successfully submitted and enqueued. jobId={}, taskType={}", jobId, taskType);
+        });
 
         // Step d: Return generated jobId
         return jobId;
@@ -80,7 +90,8 @@ public class TaskService {
 
     /**
      * Schedules a delayed job by enforcing idempotency, saving the initial record
-     * in PostgreSQL with status SCHEDULED, and placing the jobId into the Redis Sorted Set.
+     * in PostgreSQL with status SCHEDULED, and placing the jobId into the Redis Sorted Set
+     * ONLY after the database transaction commits.
      *
      * @param idempotencyKey unique idempotency token
      * @param taskType type of task
@@ -92,7 +103,7 @@ public class TaskService {
     @Transactional
     public String scheduleDelayedJob(String idempotencyKey, String taskType, String payload, long delayInSeconds) {
         String lockKey = IDEMPOTENCY_KEY_PREFIX + idempotencyKey;
-        Duration lockTtl = Duration.ofSeconds(Math.max(60, delayInSeconds + 60));
+        Duration lockTtl = Duration.ofSeconds(delayInSeconds + IDEMPOTENCY_TTL.toSeconds());
 
         Boolean acquired = stringRedisTemplate.opsForValue().setIfAbsent(
             lockKey,
@@ -116,10 +127,26 @@ public class TaskService {
         String jobId = savedRecord.getId();
 
         double executeAt = (double) (System.currentTimeMillis() + (delayInSeconds * 1000L));
-        stringRedisTemplate.opsForZSet().add(DELAYED_QUEUE_KEY, jobId, executeAt);
-        log.info("Job scheduled with {}s delay. jobId={}, taskType={}, executeAt={}", delayInSeconds, jobId, taskType, executeAt);
+        // Push the jobId to Redis Sorted Set only after the DB transaction commits
+        executeAfterTransactionCommit(() -> {
+            stringRedisTemplate.opsForZSet().add(DELAYED_QUEUE_KEY, jobId, executeAt);
+            log.info("Job scheduled with {}s delay. jobId={}, taskType={}, executeAt={}", delayInSeconds, jobId, taskType, executeAt);
+        });
 
         return jobId;
+    }
+
+    private void executeAfterTransactionCommit(Runnable action) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    action.run();
+                }
+            });
+        } else {
+            action.run();
+        }
     }
 
     /**
@@ -134,35 +161,68 @@ public class TaskService {
     }
 
     /**
-     * Retrieves the top 20 most recent job records.
+     * Retrieves a paginated view of recent job records ordered by creation time descending.
      *
-     * @return list of recent JobRecord entities
+     * @param pageable pagination parameters (page, size, sort)
+     * @return page of recent JobRecord entities
      */
     @Transactional(readOnly = true)
-    public List<JobRecord> getRecentJobs() {
-        return jobRepository.findTop20ByOrderByCreatedAtDesc();
+    public Page<JobRecord> getRecentJobs(Pageable pageable) {
+        return jobRepository.findAllByOrderByCreatedAtDesc(pageable);
     }
 
     /**
-     * Lists all jobs currently in Dead Letter Queue (DLQ).
-     * Retrieves job IDs from the Redis DLQ list and populates the full JobRecord details from PostgreSQL.
+     * Overload defaulting to first page of 20 items.
      *
-     * @return list of JobRecord entities residing in DLQ
+     * @return page of recent JobRecord entities
      */
     @Transactional(readOnly = true)
-    public List<JobRecord> getDlqJobs() {
-        List<String> dlqJobIds = stringRedisTemplate.opsForList().range(DLQ_KEY, 0, -1);
+    public Page<JobRecord> getRecentJobs() {
+        return getRecentJobs(PageRequest.of(0, 20));
+    }
+
+    /**
+     * Lists jobs currently in Dead Letter Queue (DLQ) with pagination support.
+     * Retrieves job IDs from the Redis DLQ list and populates the full JobRecord details from PostgreSQL.
+     * Falls back to PostgreSQL FAILED jobs if Redis DLQ list is empty.
+     *
+     * @param pageable pagination parameters
+     * @return page of JobRecord entities residing in DLQ
+     */
+    @Transactional(readOnly = true)
+    public Page<JobRecord> getDlqJobs(Pageable pageable) {
+        Long totalElements = stringRedisTemplate.opsForList().size(DLQ_KEY);
+        if (totalElements == null || totalElements == 0) {
+            return jobRepository.findByStatus(JobStatus.FAILED, pageable);
+        }
+
+        long start = pageable.getOffset();
+        long end = start + pageable.getPageSize() - 1;
+        List<String> dlqJobIds = stringRedisTemplate.opsForList().range(DLQ_KEY, start, end);
+
         if (dlqJobIds == null || dlqJobIds.isEmpty()) {
-            return jobRepository.findByStatus(JobStatus.FAILED);
+            return new PageImpl<>(Collections.emptyList(), pageable, totalElements);
         }
 
         Map<String, JobRecord> jobMap = jobRepository.findAllById(dlqJobIds).stream()
                 .collect(Collectors.toMap(JobRecord::getId, Function.identity()));
 
-        return dlqJobIds.stream()
+        List<JobRecord> pageJobs = dlqJobIds.stream()
                 .map(jobMap::get)
                 .filter(java.util.Objects::nonNull)
                 .collect(Collectors.toList());
+
+        return new PageImpl<>(pageJobs, pageable, totalElements);
+    }
+
+    /**
+     * Overload defaulting to first page of 20 items.
+     *
+     * @return page of JobRecord entities residing in DLQ
+     */
+    @Transactional(readOnly = true)
+    public Page<JobRecord> getDlqJobs() {
+        return getDlqJobs(PageRequest.of(0, 20));
     }
 
     /**
