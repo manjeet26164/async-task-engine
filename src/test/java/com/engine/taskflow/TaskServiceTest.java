@@ -339,4 +339,39 @@ public class TaskServiceTest {
             TransactionSynchronizationManager.clearSynchronization();
         }
     }
+
+    @Test
+    void shouldEnsureReplayedJobPushedToRedisOnlyAfterTransactionCommit() {
+        String jobId = "dlq-tx-replay-123";
+        JobRecord failedJob = JobRecord.builder()
+                .id(jobId)
+                .taskType("PAYMENT")
+                .status(JobStatus.FAILED)
+                .retryCount(3)
+                .build();
+
+        when(jobRepository.findById(jobId)).thenReturn(Optional.of(failedJob));
+        when(stringRedisTemplate.opsForList()).thenReturn(listOperations);
+        when(jobRepository.save(any(JobRecord.class))).thenAnswer(i -> i.getArgument(0));
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            JobRecord replayed = taskService.replayDlqJob(jobId);
+            assertEquals(JobStatus.QUEUED, replayed.getStatus());
+
+            // DLQ remove happens immediately, but active queue push must NOT happen before commit
+            verify(listOperations).remove(TaskService.DLQ_KEY, 1, jobId);
+            verify(listOperations, never()).leftPush(anyString(), anyString());
+
+            // Simulate database transaction commit
+            for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+                sync.afterCommit();
+            }
+
+            // Verify: Active queue push happened in afterCommit
+            verify(listOperations).leftPush(TaskService.ACTIVE_QUEUE_KEY, jobId);
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
 }

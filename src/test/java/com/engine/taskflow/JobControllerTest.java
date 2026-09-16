@@ -125,6 +125,23 @@ public class JobControllerTest {
         }
 
         @Test
+        void shouldReturnBadRequestWhenTaskTypeContainsInvalidCharacters() throws Exception {
+                String idempotencyKey = "key-invalid-tasktype-chars";
+                SubmitJobRequest request = SubmitJobRequest.builder()
+                                .taskType("<script>alert(1)</script>") // Contains invalid characters violating @Pattern
+                                .payload("{\"test\":true}")
+                                .build();
+
+                mockMvc.perform(post("/api/v1/jobs/submit")
+                                .header("Idempotency-Key", idempotencyKey)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(objectMapper.writeValueAsString(request)))
+                                .andExpect(status().isBadRequest())
+                                .andExpect(jsonPath("$.error").value("Bad Request"))
+                                .andExpect(jsonPath("$.errors.taskType").isNotEmpty());
+        }
+
+        @Test
         void shouldReturnBadRequestWhenDelayInSecondsIsNegative() throws Exception {
                 String idempotencyKey = "key-invalid-delay";
                 SubmitJobRequest request = SubmitJobRequest.builder()

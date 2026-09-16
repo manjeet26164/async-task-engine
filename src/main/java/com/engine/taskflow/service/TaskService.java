@@ -246,9 +246,11 @@ public class TaskService {
         job.setRetryCount(0);
         JobRecord saved = jobRepository.save(job);
 
-        // Re-enqueue into active queue
-        stringRedisTemplate.opsForList().leftPush(ACTIVE_QUEUE_KEY, jobId);
-        log.info("Job {} successfully replayed from DLQ to active queue", jobId);
+        // Re-enqueue into active queue only after the DB transaction commits
+        executeAfterTransactionCommit(() -> {
+            stringRedisTemplate.opsForList().leftPush(ACTIVE_QUEUE_KEY, jobId);
+            log.info("Job {} successfully replayed from DLQ to active queue", jobId);
+        });
 
         return saved;
     }

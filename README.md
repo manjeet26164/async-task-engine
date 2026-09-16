@@ -107,8 +107,9 @@
    - Poison-pill jobs exceeding max retries are routed to `jobs:queue:dlq` and marked as `FAILED`.
    - Provides admin endpoints to inspect DLQ payloads and replay failed tasks with a clean state.
 
-7. **Role-Based API Security (RBAC)**:
-   - Enforces Jakarta Bean Validation (`@NotBlank`, `@Size`, `@Positive`) on payload DTOs with centralized error sanitization.
+7. **Role-Based API Security (RBAC) & Input Validation**:
+   - Enforces Jakarta Bean Validation (`@NotBlank`, `@Size`, `@Positive`, `@Pattern`) on payload DTOs with centralized error sanitization.
+   - Restricts `taskType` to alphanumeric characters, underscores, and hyphens (`^[A-Za-z0-9_-]+$`) as defense-in-depth against injection attacks.
    - Protected with a stateless `X-API-KEY` header filter using constant-time verification (`MessageDigest.isEqual`).
    - Supports two distinct privilege tiers:
      - **Regular User (`ROLE_API_USER`)**: Authorizes job submission, status lookups, and telemetry (`/submit`, `/recent`, `/{id}`, `/metrics`).
@@ -227,6 +228,10 @@ All `/api/v1/**` endpoints require the header:
   - `Content-Type: application/json`
   - `Idempotency-Key: <unique-uuid-or-string>` (Required)
   - `X-API-KEY: <your-configured-api-key>` (Required)
+- **Request Body Fields**:
+  - `taskType` (string, required): Identifier for the task worker. Allowed format: alphanumeric characters, underscores, and hyphens only (`^[A-Za-z0-9_-]+$`), max 100 characters.
+  - `payload` (string, optional): Serialized JSON task payload, max 64KB (65,536 characters).
+  - `delayInSeconds` (integer, optional): Optional scheduling delay in seconds (must be a positive number if provided).
 - **Request Body**:
 ```json
 {

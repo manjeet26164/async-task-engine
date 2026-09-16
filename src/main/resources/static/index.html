@@ -441,6 +441,17 @@
 
     <!-- Application Script -->
     <script>
+        // HTML Escaping helper to mitigate XSS vulnerabilities (escape &, <, >, ", ')
+        function escapeHtml(str) {
+            if (str === null || str === undefined) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
         // Preset configurations
         const presets = {
             IMAGE_PROCESSING: {
@@ -728,6 +739,7 @@
 
         // Status Badge Formatter
         function renderStatusBadge(status) {
+            const safeStatus = escapeHtml(status);
             switch (status) {
                 case 'COMPLETED':
                     return `<span class="px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-md">COMPLETED</span>`;
@@ -740,7 +752,7 @@
                 case 'FAILED':
                     return `<span class="px-2 py-0.5 text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded-md">FAILED</span>`;
                 default:
-                    return `<span class="px-2 py-0.5 text-[10px] font-semibold bg-slate-800 text-slate-400 border border-slate-700 rounded-md">${status}</span>`;
+                    return `<span class="px-2 py-0.5 text-[10px] font-semibold bg-slate-800 text-slate-400 border border-slate-700 rounded-md">${safeStatus}</span>`;
             }
         }
 
@@ -842,27 +854,30 @@
                 }
 
                 tbody.innerHTML = jobs.map((job, idx) => {
-                    const shortId = job.id ? job.id.substring(0, 8) + '...' : 'N/A';
-                    const timeStr = job.createdAt ? new Date(job.createdAt).toLocaleTimeString() : 'N/A';
-                    const retries = `${job.retryCount || 0} / ${job.maxRetries || 3}`;
+                    const safeId = escapeHtml(job.id);
+                    const shortId = job.id ? escapeHtml(job.id.substring(0, 8) + '...') : 'N/A';
+                    const safeTaskType = escapeHtml(job.taskType);
+                    const safeIdempKey = escapeHtml(job.idempotencyKey);
+                    const timeStr = job.createdAt ? escapeHtml(new Date(job.createdAt).toLocaleTimeString()) : 'N/A';
+                    const retries = `${escapeHtml(job.retryCount || 0)} / ${escapeHtml(job.maxRetries || 3)}`;
                     const isFailed = job.status === 'FAILED' || (job.retryCount >= job.maxRetries);
 
                     return `
                         <tr class="hover:bg-slate-900/50 transition">
-                            <td class="px-3.5 py-2.5 font-bold text-slate-200" title="${job.id}">
-                                <span class="cursor-pointer hover:text-brand-400" onclick="copyToClipboard('${job.id}')">${shortId}</span>
+                            <td class="px-3.5 py-2.5 font-bold text-slate-200" title="${safeId}">
+                                <span class="cursor-pointer hover:text-brand-400" onclick="copyToClipboard('${safeId}')">${shortId}</span>
                             </td>
-                            <td class="px-3.5 py-2.5 text-slate-300">${job.taskType}</td>
+                            <td class="px-3.5 py-2.5 text-slate-300">${safeTaskType}</td>
                             <td class="px-3.5 py-2.5">${renderStatusBadge(job.status)}</td>
                             <td class="px-3.5 py-2.5 ${isFailed ? 'text-rose-400 font-bold' : 'text-slate-400'}">${retries}</td>
-                            <td class="px-3.5 py-2.5 text-slate-400 truncate max-w-[120px]" title="${job.idempotencyKey}">${job.idempotencyKey}</td>
+                            <td class="px-3.5 py-2.5 text-slate-400 truncate max-w-[120px]" title="${safeIdempKey}">${safeIdempKey}</td>
                             <td class="px-3.5 py-2.5 text-slate-400">${timeStr}</td>
                             <td class="px-3.5 py-2.5 text-right flex items-center justify-end gap-1.5">
                                 <button onclick="inspectPayload(${idx})" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] transition">
                                     Inspect
                                 </button>
                                 ${job.status === 'FAILED' ? `
-                                <button onclick="replayJob('${job.id}')" class="px-2 py-1 rounded bg-rose-900/40 hover:bg-rose-800/60 text-rose-300 border border-rose-700/50 text-[11px] transition font-semibold">
+                                <button onclick="replayJob('${safeId}')" class="px-2 py-1 rounded bg-rose-900/40 hover:bg-rose-800/60 text-rose-300 border border-rose-700/50 text-[11px] transition font-semibold">
                                     Replay
                                 </button>
                                 ` : ''}
@@ -1037,13 +1052,15 @@
         function inspectPayload(index) {
             const job = recentJobsCache[index];
             if (!job) return;
-            document.getElementById('modalJobId').innerText = job.id;
+            document.getElementById('modalJobId').innerHTML = escapeHtml(job.id);
+            let formattedPayload = '';
             try {
                 const parsed = JSON.parse(job.payload);
-                document.getElementById('modalPayloadContent').innerText = JSON.stringify(parsed, null, 2);
+                formattedPayload = JSON.stringify(parsed, null, 2);
             } catch (e) {
-                document.getElementById('modalPayloadContent').innerText = job.payload || '{}';
+                formattedPayload = job.payload || '{}';
             }
+            document.getElementById('modalPayloadContent').innerHTML = escapeHtml(formattedPayload);
             document.getElementById('inspectModal').classList.remove('hidden');
         }
 
