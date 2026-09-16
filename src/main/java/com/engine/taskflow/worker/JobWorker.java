@@ -15,6 +15,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.script.RedisScript;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -167,14 +168,24 @@ public class JobWorker {
 
         if (updatedRetryCount >= maxRetries) {
             currentJob.setStatus(JobStatus.FAILED);
-            jobRepository.save(currentJob);
+            try {
+                jobRepository.save(currentJob);
+            } catch (ObjectOptimisticLockingFailureException e) {
+                log.warn("Watchdog recovery for job {} superseded by concurrent update (optimistic lock collision). Skipping recovery.", jobId);
+                return;
+            }
             stringRedisTemplate.opsForList().leftPush(DLQ_KEY, jobId);
             clearIdempotencyKey(currentJob);
             log.error("Stuck job {} exceeded max retries ({}/{}). Marked as FAILED and routed to DLQ",
                     jobId, updatedRetryCount, maxRetries);
         } else {
             currentJob.setStatus(JobStatus.QUEUED);
-            jobRepository.save(currentJob);
+            try {
+                jobRepository.save(currentJob);
+            } catch (ObjectOptimisticLockingFailureException e) {
+                log.warn("Watchdog recovery for job {} superseded by concurrent update (optimistic lock collision). Skipping recovery.", jobId);
+                return;
+            }
             stringRedisTemplate.opsForList().leftPush(ACTIVE_QUEUE_KEY, jobId);
             log.warn("Stuck job {} recovered (retry {}/{}). Bumped leaseVersion to {}. Re-queued to active queue",
                     jobId, updatedRetryCount, maxRetries, currentJob.getLeaseVersion());
@@ -266,7 +277,12 @@ public class JobWorker {
             job.setStatus(JobStatus.RUNNING);
             job.setWorkerId(this.workerId);
             job.setLeaseVersion(assignedLeaseVersion);
-            jobRepository.save(job);
+            try {
+                jobRepository.save(job);
+            } catch (ObjectOptimisticLockingFailureException e) {
+                log.warn("[{}] Job {} lease claim superseded by concurrent update (optimistic lock collision). Skipping execution.", threadName, jobId);
+                return;
+            }
             log.info("[{}] Job {} marked as RUNNING by worker {} with leaseVersion {}",
                     threadName, jobId, this.workerId, assignedLeaseVersion);
 
@@ -287,7 +303,12 @@ public class JobWorker {
 
             JobRecord currentJob = currentJobOpt.get();
             currentJob.setStatus(JobStatus.COMPLETED);
-            jobRepository.save(currentJob);
+            try {
+                jobRepository.save(currentJob);
+            } catch (ObjectOptimisticLockingFailureException e) {
+                log.warn("[{}] Job {} completion superseded by concurrent update (optimistic lock collision). Skipping DB update.", threadName, jobId);
+                return;
+            }
             log.info("[{}] Job {} completed successfully. Marked as COMPLETED in PostgreSQL", threadName, jobId);
 
             // Explicitly release idempotency key when job reaches terminal COMPLETED state
@@ -319,7 +340,12 @@ public class JobWorker {
 
         if (updatedRetryCount >= maxRetries) {
             currentJob.setStatus(JobStatus.FAILED);
-            jobRepository.save(currentJob);
+            try {
+                jobRepository.save(currentJob);
+            } catch (ObjectOptimisticLockingFailureException e) {
+                log.warn("[{}] Job {} failure handling superseded by concurrent update (optimistic lock collision). Skipping DB update.", threadName, jobId);
+                return;
+            }
             stringRedisTemplate.opsForList().leftPush(DLQ_KEY, jobId);
             clearIdempotencyKey(currentJob);
             log.error("[{}] Job {} reached max retries ({}/{}). Marked as FAILED and routed to DLQ [{}]",
@@ -328,7 +354,12 @@ public class JobWorker {
             // Exponential backoff: 2^retryCount seconds (e.g. 2s, 4s, 8s...) capped at MAX_BACKOFF_SECONDS
             long backoffDelaySeconds = (long) Math.min(MAX_BACKOFF_SECONDS, Math.pow(2, updatedRetryCount));
             currentJob.setStatus(JobStatus.SCHEDULED);
-            jobRepository.save(currentJob);
+            try {
+                jobRepository.save(currentJob);
+            } catch (ObjectOptimisticLockingFailureException e) {
+                log.warn("[{}] Job {} retry scheduling superseded by concurrent update (optimistic lock collision). Skipping DB update.", threadName, jobId);
+                return;
+            }
 
             double executeAt = (double) (System.currentTimeMillis() + (backoffDelaySeconds * 1000L));
             stringRedisTemplate.opsForZSet().add(DELAYED_QUEUE_KEY, jobId, executeAt);

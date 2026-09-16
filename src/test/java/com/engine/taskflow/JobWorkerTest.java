@@ -12,6 +12,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.ListOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -509,5 +510,54 @@ public class JobWorkerTest {
 
         assertEquals(JobStatus.COMPLETED, jobRecord.getStatus());
         verify(stringRedisTemplate).delete("idemp:idemp-no-fp-1");
+    }
+
+    @Test
+    void shouldGracefullyHandleOptimisticLockingFailureWhenConcurrentSaveOccursInProcessJob() {
+        String jobId = "job-concurrent-conflict";
+        JobRecord jobRecord = JobRecord.builder()
+                .id(jobId)
+                .idempotencyKey("idemp-conflict-1")
+                .taskType("IMAGE_PROCESSING")
+                .payload("{}")
+                .status(JobStatus.QUEUED)
+                .leaseVersion(0)
+                .build();
+
+        when(jobRepository.findById(jobId)).thenReturn(Optional.of(jobRecord));
+        // First save (claim lease) succeeds, second save (completion) encounters optimistic lock failure
+        when(jobRepository.save(any(JobRecord.class)))
+                .thenReturn(jobRecord)
+                .thenThrow(new ObjectOptimisticLockingFailureException(JobRecord.class, jobId));
+
+        assertDoesNotThrow(() -> jobWorker.processJob(jobId));
+
+        // Verify idempotency key was NOT deleted because completion was aborted
+        verify(stringRedisTemplate, never()).delete("idemp:idemp-conflict-1");
+    }
+
+    @Test
+    void shouldGracefullyHandleOptimisticLockingFailureWhenWatchdogRecoversJobConcurrently() {
+        String jobId = "job-watchdog-conflict";
+        JobRecord jobRecord = JobRecord.builder()
+                .id(jobId)
+                .idempotencyKey("idemp-watchdog-conflict")
+                .taskType("DATA_SYNC")
+                .status(JobStatus.RUNNING)
+                .leaseVersion(1)
+                .retryCount(0)
+                .maxRetries(3)
+                .build();
+
+        when(jobRepository.findByStatusAndUpdatedAtBefore(eq(JobStatus.RUNNING), any(LocalDateTime.class)))
+                .thenReturn(List.of(jobRecord));
+        when(jobRepository.findById(jobId)).thenReturn(Optional.of(jobRecord));
+        when(jobRepository.save(any(JobRecord.class)))
+                .thenThrow(new ObjectOptimisticLockingFailureException(JobRecord.class, jobId));
+
+        assertDoesNotThrow(() -> jobWorker.recoverStuckJobs());
+
+        // Verify active queue push did not occur due to lock collision
+        verify(listOperations, never()).leftPush(anyString(), anyString());
     }
 }
