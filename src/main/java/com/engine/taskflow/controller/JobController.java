@@ -43,8 +43,7 @@ public class JobController {
                     idempotencyKey,
                     request.getTaskType(),
                     request.getPayload(),
-                    request.getDelayInSeconds()
-            );
+                    request.getDelayInSeconds());
             status = "SCHEDULED";
             message = "Job scheduled with " + request.getDelayInSeconds() + "s delay";
         } else {

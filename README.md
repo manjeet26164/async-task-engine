@@ -4,6 +4,18 @@ An asynchronous background task processing engine built with Spring Boot 3.3.4, 
 
 ---
 
+## Tech Stack
+
+- **Java 17**
+- **Spring Boot 3.3.4** (Web, Data JPA, Validation, Security)
+- **PostgreSQL**
+- **Redis**
+- **Flyway**
+- **Docker**
+- **JUnit 5**
+
+---
+
 ## Architecture Overview
 
 ```
@@ -104,6 +116,10 @@ An asynchronous background task processing engine built with Spring Boot 3.3.4, 
 
 ## Quick Start
 
+### Prerequisites
+- Java 17+
+- Docker & Docker Compose (or Maven if running without Docker)
+
 ### 1. Run with Docker Compose
 ```bash
 # Run complete stack (App + Postgres + Redis)
@@ -125,6 +141,20 @@ export APP_SECURITY_ADMIN_API_KEY="my-admin-key"
 ```
 
 Dashboard is available at `http://localhost:8080/index.html`.
+
+### Environment Variables
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `APP_SECURITY_API_KEY` | API key for standard user endpoints | None (required) |
+| `APP_SECURITY_ADMIN_API_KEY` | API key for admin-only endpoints | None (required) |
+| `SPRING_DATASOURCE_URL` | PostgreSQL JDBC connection URL | `jdbc:postgresql://localhost:5433/taskdb` |
+| `SPRING_DATASOURCE_USERNAME` | PostgreSQL database username | `postgres` |
+| `SPRING_DATASOURCE_PASSWORD` | PostgreSQL database password | `password` |
+| `SPRING_REDIS_HOST` | Redis host | `localhost` |
+| `SPRING_REDIS_PORT` | Redis port | `6379` |
+| `APP_WORKER_STUCK_TIMEOUT_SECONDS` | Inactivity duration before stuck jobs are recovered | `300` |
+| `APP_WORKER_RECOVERY_INTERVAL_MS` | Watchdog polling interval for stuck job recovery | `60000` |
 
 ---
 
