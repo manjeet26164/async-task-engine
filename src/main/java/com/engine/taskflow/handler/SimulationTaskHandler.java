@@ -6,9 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-/**
- * Task handler that evaluates payload-based failure simulation for testing and demos.
- */
+// Evaluates payload JSON (e.g. {"fail": true}) to simulate job failures during tests
 @Component
 @Slf4j
 public class SimulationTaskHandler implements TaskHandler {

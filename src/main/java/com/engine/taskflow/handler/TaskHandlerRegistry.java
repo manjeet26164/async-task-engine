@@ -9,9 +9,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Registry holding all discoverable TaskHandler implementations keyed by taskType.
- */
+// Thread-safe registry mapping task types to their handlers
 @Component
 @Slf4j
 public class TaskHandlerRegistry {

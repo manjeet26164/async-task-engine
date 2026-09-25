@@ -11,10 +11,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
 
-/**
- * Task handler that writes job execution artifacts to disk.
- * Demonstrates real I/O task execution.
- */
+// Writes job execution records to JSON files on disk
 @Component
 @Slf4j
 public class FileExportTaskHandler implements TaskHandler {

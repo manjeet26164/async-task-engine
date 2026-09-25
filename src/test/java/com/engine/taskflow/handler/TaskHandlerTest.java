@@ -73,7 +73,7 @@ public class TaskHandlerTest {
         handler.execute(job);
 
         Path expectedFile = tempDir.resolve("export-" + jobId + ".json");
-        assertTrue(Files.exists(expectedFile), "Exported file should exist on disk");
+        assertTrue(Files.exists(expectedFile));
         String content = Files.readString(expectedFile);
         assertTrue(content.contains(jobId));
         assertTrue(content.contains("monthly_summary"));
@@ -91,5 +91,32 @@ public class TaskHandlerTest {
                 .build();
 
         assertDoesNotThrow(() -> handler.execute(job));
+    }
+
+    @Test
+    void httpWebhookHandlerShouldBlockPrivateAndInternalIpAddresses() {
+        HttpWebhookTaskHandler handler = new HttpWebhookTaskHandler();
+
+        String[] privateUrls = {
+                "http://localhost:8080/internal",
+                "http://127.0.0.1:9000/api",
+                "http://169.254.169.254/latest/meta-data",
+                "http://10.0.0.5:8080/data",
+                "http://172.20.0.1:8080/service",
+                "http://192.168.1.100/admin"
+        };
+
+        for (String url : privateUrls) {
+            JobRecord job = JobRecord.builder()
+                    .id("webhook-ssrf-" + url.hashCode())
+                    .taskType("WEBHOOK")
+                    .payload("{\"url\": \"" + url + "\"}")
+                    .status(JobStatus.RUNNING)
+                    .build();
+
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> handler.execute(job),
+                    "Should block private URL: " + url);
+            assertTrue(ex.getMessage().contains("Blocked outbound webhook to private/internal address"));
+        }
     }
 }

@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: taskdb
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: password # Local development only, do not use in production
     ports:
       - "5433:5432"
     volumes:
@@ -46,11 +46,11 @@ services:
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/taskdb
       SPRING_DATASOURCE_USERNAME: postgres
-      SPRING_DATASOURCE_PASSWORD: password
+      SPRING_DATASOURCE_PASSWORD: password # Local development only, do not use in production
       SPRING_REDIS_HOST: redis
       SPRING_REDIS_PORT: 6379
-      APP_SECURITY_API_KEY: my-local-dev-secret-key-123
-      APP_SECURITY_ADMIN_API_KEY: my-local-admin-secret-456
+      APP_SECURITY_API_KEY: my-local-dev-secret-key-123 # Local development only, do not use in production
+      APP_SECURITY_ADMIN_API_KEY: my-local-admin-secret-456 # Local development only, do not use in production
       APP_WORKER_STUCK_TIMEOUT_SECONDS: 300
       APP_WORKER_RECOVERY_INTERVAL_MS: 60000
     ports:

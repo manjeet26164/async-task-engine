@@ -239,14 +239,10 @@ public class JobWorkerConcurrencyAndReliabilityTest {
                 eq(jobId), eq(0), eq(JobStatus.QUEUED), eq(1), eq(1), any(LocalDateTime.class)))
                 .thenReturn(1);
 
-        // Run recovery watchdog
         worker1.recoverStuckProcessingJobs(LocalDateTime.now().minusSeconds(300));
 
-        // 1. Verify job was re-queued to active queue
         verify(listOperations).leftPush(JobWorker.ACTIVE_QUEUE_KEY, jobId);
-        // 2. Verify job was removed from crashed worker's processing queue
         verify(listOperations).remove(crashedWorkerQueue, 1, jobId);
-        // 3. Verify in-memory state updated
         assertEquals(JobStatus.QUEUED, orphanedJob.getStatus());
         assertEquals(1, orphanedJob.getRetryCount());
         assertEquals(1, orphanedJob.getLeaseVersion());
@@ -281,16 +277,11 @@ public class JobWorkerConcurrencyAndReliabilityTest {
                 eq(jobId), eq(2), eq(JobStatus.FAILED), eq(3), eq(3), any(LocalDateTime.class)))
                 .thenReturn(1);
 
-        // Run recovery watchdog
         worker1.recoverStuckProcessingJobs(LocalDateTime.now().minusSeconds(300));
 
-        // 1. Verify job was routed to DLQ
         verify(listOperations).leftPush(JobWorker.DLQ_KEY, jobId);
-        // 2. Verify idempotency key was released
         verify(stringRedisTemplate).delete("idemp:idemp-crashed-max");
-        // 3. Verify job was removed from crashed worker's processing queue
         verify(listOperations).remove(crashedWorkerQueue, 1, jobId);
-        // 4. Verify in-memory state
         assertEquals(JobStatus.FAILED, orphanedJob.getStatus());
         assertEquals(3, orphanedJob.getRetryCount());
     }
