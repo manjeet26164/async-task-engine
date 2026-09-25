@@ -1,8 +1,4 @@
 #!/bin/bash
-# ==============================================================================
-# TaskFlow High-Concurrency Load Simulation Script (Bash / cURL)
-# Spawns 200 concurrent HTTP POST requests to /api/v1/jobs/submit
-# ==============================================================================
 
 TARGET_URL="${1:-http://localhost:8080/api/v1/jobs/submit}"
 API_KEY="${2:-taskflow-secret-key-2026}"

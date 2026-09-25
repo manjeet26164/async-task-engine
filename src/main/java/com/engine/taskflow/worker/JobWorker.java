@@ -1,5 +1,7 @@
 package com.engine.taskflow.worker;
 
+import com.engine.taskflow.handler.TaskHandler;
+import com.engine.taskflow.handler.TaskHandlerRegistry;
 import com.engine.taskflow.model.JobRecord;
 import com.engine.taskflow.model.JobStatus;
 import com.engine.taskflow.repository.JobRepository;
@@ -18,6 +20,7 @@ import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -34,6 +37,7 @@ public class JobWorker {
     public static final String ACTIVE_QUEUE_KEY = "jobs:queue:active";
     public static final String DLQ_KEY = "jobs:queue:dlq";
     public static final String DELAYED_QUEUE_KEY = "jobs:queue:delayed";
+    public static final String PROCESSING_QUEUE_PREFIX = "jobs:queue:processing:";
     private static final long POLL_TIMEOUT_SECONDS = 2L;
     private static final long MAX_BACKOFF_SECONDS = 300L;
     private static final int FIND_JOB_MAX_ATTEMPTS = 3;
@@ -55,8 +59,10 @@ public class JobWorker {
     private final JobRepository jobRepository;
     private final ExecutorService workerThreadPool;
     private final ObjectMapper objectMapper;
+    private final TaskHandlerRegistry taskHandlerRegistry;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final String workerId;
+    private final String processingQueueKey;
     private Thread pollingThread;
 
     @Value("${app.worker.stuck-timeout-seconds:300}")
@@ -67,8 +73,33 @@ public class JobWorker {
             StringRedisTemplate stringRedisTemplate,
             JobRepository jobRepository,
             @Qualifier("workerThreadPool") ExecutorService workerThreadPool,
+            ObjectMapper objectMapper,
+            TaskHandlerRegistry taskHandlerRegistry) {
+        this(stringRedisTemplate, jobRepository, workerThreadPool, objectMapper, taskHandlerRegistry, "worker-" + UUID.randomUUID());
+    }
+
+    public JobWorker(
+            StringRedisTemplate stringRedisTemplate,
+            JobRepository jobRepository,
+            ExecutorService workerThreadPool,
+            ObjectMapper objectMapper,
+            TaskHandlerRegistry taskHandlerRegistry,
+            String workerId) {
+        this.stringRedisTemplate = stringRedisTemplate;
+        this.jobRepository = jobRepository;
+        this.workerThreadPool = workerThreadPool;
+        this.objectMapper = objectMapper;
+        this.taskHandlerRegistry = taskHandlerRegistry != null ? taskHandlerRegistry : new TaskHandlerRegistry();
+        this.workerId = workerId;
+        this.processingQueueKey = PROCESSING_QUEUE_PREFIX + workerId;
+    }
+
+    public JobWorker(
+            StringRedisTemplate stringRedisTemplate,
+            JobRepository jobRepository,
+            @Qualifier("workerThreadPool") ExecutorService workerThreadPool,
             ObjectMapper objectMapper) {
-        this(stringRedisTemplate, jobRepository, workerThreadPool, objectMapper, "worker-" + UUID.randomUUID());
+        this(stringRedisTemplate, jobRepository, workerThreadPool, objectMapper, new TaskHandlerRegistry());
     }
 
     public JobWorker(
@@ -77,11 +108,7 @@ public class JobWorker {
             ExecutorService workerThreadPool,
             ObjectMapper objectMapper,
             String workerId) {
-        this.stringRedisTemplate = stringRedisTemplate;
-        this.jobRepository = jobRepository;
-        this.workerThreadPool = workerThreadPool;
-        this.objectMapper = objectMapper;
-        this.workerId = workerId;
+        this(stringRedisTemplate, jobRepository, workerThreadPool, objectMapper, new TaskHandlerRegistry(), workerId);
     }
 
     public JobWorker(
@@ -103,9 +130,14 @@ public class JobWorker {
         return workerId;
     }
 
-    /**
-     * Periodically polls mature delayed jobs from Redis Sorted Set and promotes them to the active queue.
-     */
+    public TaskHandlerRegistry getTaskHandlerRegistry() {
+        return taskHandlerRegistry;
+    }
+
+    public String getProcessingQueueKey() {
+        return processingQueueKey;
+    }
+
     @Scheduled(fixedRate = 500)
     public void pollDelayedJobs() {
         try {
@@ -123,11 +155,7 @@ public class JobWorker {
         }
     }
 
-    /**
-     * Periodic watchdog task to detect and recover orphaned / stuck jobs.
-     * If a worker crashed while executing a job (status remains RUNNING beyond the lease timeout),
-     * this scheduled task re-enqueues the job or routes it to DLQ if retries are exhausted.
-     */
+    // Watchdog to recover jobs stuck in RUNNING beyond the lease timeout, and jobs stuck in worker processing lists
     @Scheduled(fixedDelayString = "${app.worker.recovery-interval-ms:60000}")
     public void recoverStuckJobs() {
         try {
@@ -142,54 +170,129 @@ public class JobWorker {
                     recoverOrphanedJob(job);
                 }
             }
+
+            recoverStuckProcessingJobs(threshold);
         } catch (Exception e) {
             log.error("Error during stuck job recovery watchdog scan: {}", e.getMessage(), e);
         }
     }
 
-    private void recoverOrphanedJob(JobRecord job) {
-        String jobId = job.getId();
-        int expectedVersion = job.getLeaseVersion();
+    public void recoverStuckProcessingJobs(LocalDateTime threshold) {
+        try {
+            if (stringRedisTemplate == null) {
+                return;
+            }
+            java.util.Set<String> processingKeys = stringRedisTemplate.keys(PROCESSING_QUEUE_PREFIX + "*");
+            if (processingKeys == null || processingKeys.isEmpty()) {
+                return;
+            }
 
-        Optional<JobRecord> currentJobOpt = jobRepository.findById(jobId);
-        if (currentJobOpt.isEmpty() || currentJobOpt.get().getLeaseVersion() != expectedVersion) {
-            log.warn("Watchdog recovery for job {} superseded. Expected leaseVersion {}, found {}. Skipping recovery.",
-                    jobId, expectedVersion,
-                    currentJobOpt.map(j -> String.valueOf(j.getLeaseVersion())).orElse("NOT_FOUND"));
+            for (String queueKey : processingKeys) {
+                if (stringRedisTemplate.opsForList() == null) {
+                    continue;
+                }
+                List<String> jobIds = stringRedisTemplate.opsForList().range(queueKey, 0, -1);
+                if (jobIds == null || jobIds.isEmpty()) {
+                    continue;
+                }
+
+                for (String jobId : jobIds) {
+                    if (jobId == null || jobId.isBlank()) {
+                        continue;
+                    }
+                    recoverSingleProcessingJob(queueKey, jobId, threshold);
+                }
+            }
+        } catch (Exception e) {
+            log.error("Error during processing queue recovery watchdog scan: {}", e.getMessage(), e);
+        }
+    }
+
+    private void recoverSingleProcessingJob(String queueKey, String jobId, LocalDateTime threshold) {
+        Optional<JobRecord> jobOpt = jobRepository.findById(jobId);
+        if (jobOpt.isEmpty()) {
+            log.warn("Job {} in processing queue {} not found in database. Removing from processing queue.", jobId, queueKey);
+            stringRedisTemplate.opsForList().remove(queueKey, 1, jobId);
             return;
         }
 
-        JobRecord currentJob = currentJobOpt.get();
-        int updatedRetryCount = currentJob.getRetryCount() + 1;
-        currentJob.setRetryCount(updatedRetryCount);
-        currentJob.setLeaseVersion(currentJob.getLeaseVersion() + 1);
-        currentJob.setWorkerId(null);
-        int maxRetries = currentJob.getMaxRetries() > 0 ? currentJob.getMaxRetries() : 3;
+        JobRecord job = jobOpt.get();
+        if (job.getStatus() == JobStatus.COMPLETED || job.getStatus() == JobStatus.FAILED) {
+            log.info("Job {} in processing queue {} is already in terminal state {}. Cleaning up from queue.",
+                    jobId, queueKey, job.getStatus());
+            stringRedisTemplate.opsForList().remove(queueKey, 1, jobId);
+            return;
+        }
 
-        if (updatedRetryCount >= maxRetries) {
-            currentJob.setStatus(JobStatus.FAILED);
-            try {
-                jobRepository.save(currentJob);
-            } catch (ObjectOptimisticLockingFailureException e) {
-                log.warn("Watchdog recovery for job {} superseded by concurrent update (optimistic lock collision). Skipping recovery.", jobId);
-                return;
+        if (job.getStatus() == JobStatus.SCHEDULED) {
+            log.info("Job {} in processing queue {} is already scheduled for retry. Cleaning up from queue.",
+                    jobId, queueKey);
+            stringRedisTemplate.opsForList().remove(queueKey, 1, jobId);
+            return;
+        }
+
+        if (job.getStatus() == JobStatus.RUNNING) {
+            return;
+        }
+
+        if (job.getStatus() == JobStatus.QUEUED) {
+            LocalDateTime lastUpdate = job.getUpdatedAt() != null ? job.getUpdatedAt() : job.getCreatedAt();
+            if (lastUpdate != null && lastUpdate.isBefore(threshold)) {
+                log.warn("Watchdog detected stuck job {} in QUEUED state in processing queue {} older than threshold", jobId, queueKey);
+                recoverOrphanedJob(job);
+                stringRedisTemplate.opsForList().remove(queueKey, 1, jobId);
             }
-            stringRedisTemplate.opsForList().leftPush(DLQ_KEY, jobId);
-            clearIdempotencyKey(currentJob);
+        }
+    }
+
+    @Transactional
+    public boolean recoverOrphanedJob(JobRecord job) {
+        String jobId = job.getId();
+        int expectedVersion = job.getLeaseVersion();
+        int updatedRetryCount = job.getRetryCount() + 1;
+        int maxRetries = job.getMaxRetries() > 0 ? job.getMaxRetries() : 3;
+        int newLeaseVersion = expectedVersion + 1;
+        LocalDateTime now = LocalDateTime.now();
+
+        JobStatus targetStatus = updatedRetryCount >= maxRetries ? JobStatus.FAILED : JobStatus.QUEUED;
+
+        int updatedRows = jobRepository.updateLeaseAndStatusIfVersionMatches(
+                jobId,
+                expectedVersion,
+                targetStatus,
+                newLeaseVersion,
+                updatedRetryCount,
+                now
+        );
+
+        if (updatedRows == 0) {
+            log.warn("Watchdog recovery for job {} superseded. Expected leaseVersion {}, found different version or job missing. Skipping recovery.",
+                    jobId, expectedVersion);
+            return false;
+        }
+
+        job.setStatus(targetStatus);
+        job.setRetryCount(updatedRetryCount);
+        job.setLeaseVersion(newLeaseVersion);
+        job.setWorkerId(null);
+        job.setUpdatedAt(now);
+
+        if (targetStatus == JobStatus.FAILED) {
+            if (stringRedisTemplate != null && stringRedisTemplate.opsForList() != null) {
+                stringRedisTemplate.opsForList().leftPush(DLQ_KEY, jobId);
+            }
+            clearIdempotencyKey(job);
             log.error("Stuck job {} exceeded max retries ({}/{}). Marked as FAILED and routed to DLQ",
                     jobId, updatedRetryCount, maxRetries);
         } else {
-            currentJob.setStatus(JobStatus.QUEUED);
-            try {
-                jobRepository.save(currentJob);
-            } catch (ObjectOptimisticLockingFailureException e) {
-                log.warn("Watchdog recovery for job {} superseded by concurrent update (optimistic lock collision). Skipping recovery.", jobId);
-                return;
+            if (stringRedisTemplate != null && stringRedisTemplate.opsForList() != null) {
+                stringRedisTemplate.opsForList().leftPush(ACTIVE_QUEUE_KEY, jobId);
             }
-            stringRedisTemplate.opsForList().leftPush(ACTIVE_QUEUE_KEY, jobId);
             log.warn("Stuck job {} recovered (retry {}/{}). Bumped leaseVersion to {}. Re-queued to active queue",
-                    jobId, updatedRetryCount, maxRetries, currentJob.getLeaseVersion());
+                    jobId, updatedRetryCount, maxRetries, newLeaseVersion);
         }
+
+        return true;
     }
 
     @PostConstruct
@@ -213,15 +316,16 @@ public class JobWorker {
     private void pollJobs() {
         while (running.get() && !Thread.currentThread().isInterrupted()) {
             try {
-                String jobId = stringRedisTemplate.opsForList().rightPop(
+                String jobId = stringRedisTemplate.opsForList().rightPopAndLeftPush(
                         ACTIVE_QUEUE_KEY,
+                        processingQueueKey,
                         POLL_TIMEOUT_SECONDS,
                         TimeUnit.SECONDS
                 );
 
                 if (jobId != null && !jobId.isBlank()) {
-                    log.info("[{}] Pulled jobId: {} from active queue, dispatching to workerThreadPool",
-                            Thread.currentThread().getName(), jobId);
+                    log.info("[{}] Pulled jobId: {} from active queue into {}, dispatching to workerThreadPool",
+                            Thread.currentThread().getName(), jobId, processingQueueKey);
                     workerThreadPool.submit(() -> processJob(jobId));
                 }
             } catch (Exception e) {
@@ -273,7 +377,6 @@ public class JobWorker {
         int assignedLeaseVersion = job.getLeaseVersion() + 1;
 
         try {
-            // Step 1: Update job status in PostgreSQL to RUNNING and claim lease
             job.setStatus(JobStatus.RUNNING);
             job.setWorkerId(this.workerId);
             job.setLeaseVersion(assignedLeaseVersion);
@@ -286,13 +389,9 @@ public class JobWorker {
             log.info("[{}] Job {} marked as RUNNING by worker {} with leaseVersion {}",
                     threadName, jobId, this.workerId, assignedLeaseVersion);
 
-            // Step 2: Simulate work with 500ms sleep
-            Thread.sleep(500);
+            executeTask(job);
 
-            // Step 3: Simulate failure if payload indicates "fail": true
-            simulatePayloadFailure(job.getPayload());
-
-            // Step 4: Before writing final COMPLETED status, re-fetch and verify leaseVersion
+            // Verify fencing token before marking completed
             Optional<JobRecord> currentJobOpt = jobRepository.findById(jobId);
             if (currentJobOpt.isEmpty() || currentJobOpt.get().getLeaseVersion() != assignedLeaseVersion) {
                 log.warn("[{}] Job {} completion attempt superseded. Expected leaseVersion {}, found {}. Skipping DB update.",
@@ -311,19 +410,46 @@ public class JobWorker {
             }
             log.info("[{}] Job {} completed successfully. Marked as COMPLETED in PostgreSQL", threadName, jobId);
 
-            // Explicitly release idempotency key when job reaches terminal COMPLETED state
             clearIdempotencyKey(currentJob);
 
         } catch (Exception ex) {
             log.error("[{}] Error executing job {}: {}", threadName, jobId, ex.getMessage());
             handleJobFailure(jobId, assignedLeaseVersion, ex);
+        } finally {
+            removeFromProcessingQueue(jobId);
+        }
+    }
+
+    private void executeTask(JobRecord job) throws Exception {
+        Optional<TaskHandler> handlerOpt = taskHandlerRegistry.getHandler(job.getTaskType());
+        if (handlerOpt.isPresent()) {
+            log.info("[{}] Dispatching job {} (taskType: {}) to handler: {}",
+                    Thread.currentThread().getName(), job.getId(), job.getTaskType(),
+                    handlerOpt.get().getClass().getSimpleName());
+            handlerOpt.get().execute(job);
+        } else {
+            log.debug("[{}] No dedicated handler for taskType: {}. Using default simulation.",
+                    Thread.currentThread().getName(), job.getTaskType());
+            Thread.sleep(100);
+            simulatePayloadFailure(job.getPayload());
+        }
+    }
+
+    private void removeFromProcessingQueue(String jobId) {
+        try {
+            if (stringRedisTemplate != null && stringRedisTemplate.opsForList() != null) {
+                stringRedisTemplate.opsForList().remove(processingQueueKey, 1, jobId);
+            }
+        } catch (Exception e) {
+            log.warn("[{}] Could not remove job {} from processing queue {}: {}",
+                    Thread.currentThread().getName(), jobId, processingQueueKey, e.getMessage());
         }
     }
 
     private void handleJobFailure(String jobId, int assignedLeaseVersion, Exception ex) {
         String threadName = Thread.currentThread().getName();
 
-        // Before writing final FAILED or SCHEDULED status, re-fetch and verify leaseVersion
+        // Verify fencing token before updating status
         Optional<JobRecord> currentJobOpt = jobRepository.findById(jobId);
         if (currentJobOpt.isEmpty() || currentJobOpt.get().getLeaseVersion() != assignedLeaseVersion) {
             log.warn("[{}] Job {} failure handling superseded. Expected leaseVersion {}, found {}. Skipping DB update.",
@@ -351,7 +477,7 @@ public class JobWorker {
             log.error("[{}] Job {} reached max retries ({}/{}). Marked as FAILED and routed to DLQ [{}]",
                     threadName, jobId, updatedRetryCount, maxRetries, DLQ_KEY);
         } else {
-            // Exponential backoff: 2^retryCount seconds (e.g. 2s, 4s, 8s...) capped at MAX_BACKOFF_SECONDS
+            // Exponential backoff capped at MAX_BACKOFF_SECONDS
             long backoffDelaySeconds = (long) Math.min(MAX_BACKOFF_SECONDS, Math.pow(2, updatedRetryCount));
             currentJob.setStatus(JobStatus.SCHEDULED);
             try {
@@ -386,15 +512,6 @@ public class JobWorker {
         this.stuckTimeoutSeconds = stuckTimeoutSeconds;
     }
 
-    /**
-     * Evaluates whether a failure should be simulated based on the payload JSON.
-     * Parses the payload using Jackson ObjectMapper, checking the actual boolean value of the "fail" field.
-     * Defaults to false if the field is absent, non-boolean, or if the payload is malformed/not valid JSON
-     * (logging a warning instead of failing).
-     *
-     * @param payload the job payload string
-     * @return true if payload is valid JSON and "fail" field evaluates to boolean true, false otherwise
-     */
     public boolean shouldSimulateFailure(String payload) {
         if (payload == null || payload.isBlank()) {
             return false;
@@ -412,12 +529,6 @@ public class JobWorker {
         }
     }
 
-    /**
-     * Throws a simulated RuntimeException if the payload contains "fail": true.
-     *
-     * @param payload the job payload string
-     * @throws RuntimeException if simulated failure is triggered
-     */
     public void simulatePayloadFailure(String payload) {
         if (shouldSimulateFailure(payload)) {
             throw new RuntimeException("Simulated network/system failure triggered by payload");

@@ -254,11 +254,8 @@ public class TaskServiceTest {
 
         when(jobRepository.save(any(JobRecord.class))).thenReturn(savedRecord);
 
-        // Track whether the database transaction has committed
         AtomicBoolean transactionCommitted = new AtomicBoolean(false);
 
-        // Before commit, database query returns empty (simulating uncommitted read / worker seeing nothing)
-        // After commit, database query returns the record
         when(jobRepository.findById(generatedJobId)).thenAnswer(inv -> {
             if (transactionCommitted.get()) {
                 return Optional.of(savedRecord);
@@ -266,7 +263,6 @@ public class TaskServiceTest {
             return Optional.empty();
         });
 
-        // Track what a worker sees at the exact moment the job is pushed to Redis
         AtomicBoolean findableWhenPushedToRedis = new AtomicBoolean(false);
         doAnswer(inv -> {
             String pushedJobId = inv.getArgument(1);
@@ -275,22 +271,18 @@ public class TaskServiceTest {
             return 1L;
         }).when(listOperations).leftPush(eq(TaskService.ACTIVE_QUEUE_KEY), eq(generatedJobId));
 
-        // Start Spring transaction synchronization
         TransactionSynchronizationManager.initSynchronization();
         try {
             String returnedJobId = taskService.submitJob(idempotencyKey, taskType, payload);
             assertEquals(generatedJobId, returnedJobId);
 
-            // Verify: Before transaction commits, job is NOT yet pushed to Redis
             verify(listOperations, never()).leftPush(anyString(), anyString());
 
-            // Simulate database transaction commit
             transactionCommitted.set(true);
             for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
                 sync.afterCommit();
             }
 
-            // Verify: Redis push happened in afterCommit, and at that exact moment the job WAS findable in Postgres
             verify(listOperations).leftPush(TaskService.ACTIVE_QUEUE_KEY, generatedJobId);
             assertTrue(findableWhenPushedToRedis.get(), "Job pushed to Redis must be findable in Postgres at the moment it is pushed");
         } finally {
@@ -319,21 +311,17 @@ public class TaskServiceTest {
 
         when(jobRepository.save(any(JobRecord.class))).thenReturn(savedRecord);
 
-        // Start Spring transaction synchronization
         TransactionSynchronizationManager.initSynchronization();
         try {
             String returnedJobId = taskService.scheduleDelayedJob(idempotencyKey, taskType, payload, 10L);
             assertEquals(generatedJobId, returnedJobId);
 
-            // Verify: Before transaction commits, delayed job is NOT yet added to Redis ZSet
             verify(zSetOperations, never()).add(anyString(), anyString(), anyDouble());
 
-            // Simulate transaction commit
             for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
                 sync.afterCommit();
             }
 
-            // Verify: Added only after commit
             verify(zSetOperations).add(eq(TaskService.DELAYED_QUEUE_KEY), eq(generatedJobId), anyDouble());
         } finally {
             TransactionSynchronizationManager.clearSynchronization();
@@ -359,16 +347,13 @@ public class TaskServiceTest {
             JobRecord replayed = taskService.replayDlqJob(jobId);
             assertEquals(JobStatus.QUEUED, replayed.getStatus());
 
-            // DLQ remove happens immediately, but active queue push must NOT happen before commit
             verify(listOperations).remove(TaskService.DLQ_KEY, 1, jobId);
             verify(listOperations, never()).leftPush(anyString(), anyString());
 
-            // Simulate database transaction commit
             for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
                 sync.afterCommit();
             }
 
-            // Verify: Active queue push happened in afterCommit
             verify(listOperations).leftPush(TaskService.ACTIVE_QUEUE_KEY, jobId);
         } finally {
             TransactionSynchronizationManager.clearSynchronization();

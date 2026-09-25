@@ -1,55 +1,22 @@
-# ==============================================================================
-# Compiled Java Class & Build Files
-# ==============================================================================
+# Build output
+target/
 *.class
 *.jar
 *.war
-*.nar
-*.ear
-*.zip
-*.tar.gz
-*.rar
-
-# Maven build outputs
-target/
-pom.xml.tag
-pom.xml.releaseBackup
-pom.xml.versionsBackup
-pom.xml.next
-release.properties
-dependency-reduced-pom.xml
-buildNumber.properties
-.mvn/timing.properties
-.mvn/wrapper/maven-wrapper.jar
-
-# Gradle build directory (if ever used)
-.gradle/
 build/
-/build/
+.gradle/
 
-# Virtual machine crash logs & runtime dumps
-hs_err_pid*
-replay_pid*
-*.hprof
-
-# Log files
+# Runtime logs and dumps
 *.log
 logs/
-*.log.*
+run-log.txt
+*.hprof
+hs_err_pid*
 
-# ==============================================================================
-# Secrets, Environment Variables & Sensitive Configs
-# ==============================================================================
-# Environment files
+# Environment and secrets
 .env
 .env.*
 *.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
-# Sensitive Spring Boot profiles & overrides
 application.properties
 application.properties.*
 application.yml
@@ -60,118 +27,45 @@ src/main/resources/application.yaml
 !application.properties.example
 !src/main/resources/application.properties.example
 !src/test/resources/application.properties
-application-local.properties
-application-local.yml
-application-local.yaml
-application-dev.properties
-application-dev.yml
-application-dev.yaml
-application-prod.properties
-application-prod.yml
-application-prod.yaml
-application-secrets.properties
-application-secrets.yml
-application-secrets.yaml
-application-override.properties
-application-override.yml
-application-override.yaml
-
-# Credentials & API Keys
-credentials.json
-credentials.yml
-credentials.properties
+application-*.properties
+application-*.yml
+application-*.yaml
 secrets/
-secrets.*
 *.secret
 *.secrets
 *.key
 *.pem
-*.crt
-*.der
-*.p12
-*.pfx
-*.jks
-*.keystore
+credentials.*
 
-# ==============================================================================
-# Database, Caches & Local Runtime Data
-# ==============================================================================
-# Local Postgres / Redis volume mounts
+# Local databases and caches
+*.db
+*.sqlite3
+dump.rdb
+appendonly.aof
+appendonlydir/
 pgdata/
 redisdata/
 postgres_data/
 redis_data/
-data/
-db_data/
 
-# Redis snapshots & persistence files
-dump.rdb
-appendonly.aof
-appendonlydir/
-
-# SQLite & H2 embedded database files
-*.db
-*.sqlite
-*.sqlite3
-*.mv.db
-*.trace.db
-h2/
-
-# ==============================================================================
-# IDE & Editor Files
-# ==============================================================================
-# IntelliJ IDEA
+# IDE files
 .idea/
-*.iws
 *.iml
-*.ipr
+*.iws
 out/
-
-# Eclipse
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings/
-.springBeans
-.sts4-cache
-
-# Visual Studio Code
 .vscode/
 *.code-workspace
-
-# NetBeans
-/nbproject/private/
-/nbbuild/
-/dist/
-/nbdist/
-/.nb-gradle/
-
-# JetBrains Fleet
+.classpath
+.project
+.settings/
 .fleet/
 
-# ==============================================================================
-# Operating System & AI/Agent Scratch Files
-# ==============================================================================
-# macOS
+# OS files
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-
-# Windows
-ehthumbs.db
 Thumbs.db
 [Dd]esktop.ini
-$RECYCLE.BIN/
 
-# Linux
-*~
-.directory
-
-# Temporary & agent artifacts
+# Scratch and agent artifacts
 *.tmp
-*.temp
 .agents/
 .gemini/

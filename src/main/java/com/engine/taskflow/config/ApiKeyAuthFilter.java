@@ -57,7 +57,6 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
-        // Allow static resources, welcome page, and error endpoints without API key
         return !path.startsWith("/api/v1/");
     }
 
@@ -95,14 +94,12 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
         String principal;
 
         if (isAdmin) {
-            // Admin key gets both ROLE_ADMIN and ROLE_API_USER
             authorities = List.of(
                     new SimpleGrantedAuthority("ROLE_ADMIN"),
                     new SimpleGrantedAuthority("ROLE_API_USER")
             );
             principal = "apiKeyAdmin";
         } else {
-            // Regular key gets ROLE_API_USER
             authorities = List.of(
                     new SimpleGrantedAuthority("ROLE_API_USER")
             );

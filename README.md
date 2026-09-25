@@ -1,6 +1,6 @@
-# ⚡ TaskFlow: Distributed Task Engine
+# ⚡ TaskFlow: Asynchronous Task Engine
 
-> A high-throughput, resilient asynchronous task engine built with **Spring Boot 3.3.4**, **Java 17**, **PostgreSQL**, and **Redis**. Demonstrates mission-critical distributed systems patterns including **idempotent ingestion**, **bounded worker backpressure**, **delayed/scheduled task execution**, **exponential backoff retries**, **orphaned/stuck job recovery**, and **Dead Letter Queue (DLQ) replay**.
+> A resilient, high-throughput asynchronous task processing engine built with **Spring Boot 3.3.4**, **Java 17**, **PostgreSQL**, and **Redis**. Designed as a portfolio and systems engineering project demonstrating core distributed architecture patterns: **reliable queuing (`BRPOPLPUSH`)**, **request idempotency**, **thread pool backpressure**, **delayed scheduling via atomic Lua scripts**, **fencing tokens / optimistic locking**, **atomic watchdog crash recovery**, and **Dead Letter Queue (DLQ) replay**.
 
 ---
 
@@ -43,13 +43,20 @@
                                                      │
                                                      ▼
                                     ┌───────────────────────────────────┐
-                                    │    JobWorker Poller (BRPOPLPUSH)  │
+                                    │    JobWorker (BRPOPLPUSH into     │
+                                    │  jobs:queue:processing:<worker>)  │
                                     └────────────────┬──────────────────┘
                                                      │
                                                      ▼
                                     ┌───────────────────────────────────┐
                                     │ Worker ThreadPool (Bounded Queue) │
                                     │   CallerRunsPolicy Backpressure   │
+                                    └────────────────┬──────────────────┘
+                                                     │
+                                                     ▼
+                                    ┌───────────────────────────────────┐
+                                    │      TaskHandlerRegistry          │
+                                    │  (FILE_EXPORT / WEBHOOK / SIM)    │
                                     └────────────────┬──────────────────┘
                                                      │
                           ┌──────────────────────────┴──────────────────────────┐
@@ -59,8 +66,8 @@
                           ▼                                                     ▼
             ┌───────────────────────────┐                         ┌───────────────────────────┐
             │ PostgreSQL: COMPLETED     │                         │ Retry Count < MaxRetries? │
-            └───────────────────────────┘                         └─────────────┬─────────────┘
-                                                                                │
+            │ Remove from processing q  │                         └─────────────┬─────────────┘
+            └───────────────────────────┘                                       │
                                                    ┌────────────────────────────┴────────────────────────────┐
                                                    ▼                                                         ▼
                                                 [ YES ]                                                   [ NO ]
@@ -70,6 +77,7 @@
                                  │ Exponential Backoff (2^retry sec) │                     │ PostgreSQL: Status = FAILED       │
                                  │ Redis: ZADD jobs:queue:delayed    │                     │ Redis: LPUSH jobs:queue:dlq       │
                                  │ PostgreSQL: Status = SCHEDULED    │                     │ (Dead Letter Queue)               │
+                                 │ Remove from processing queue      │                     │ Remove from processing queue      │
                                  └───────────────────────────────────┘                     └─────────────────┬─────────────────┘
                                                                                                              │
                                                                                            ┌─────────────────▼─────────────────┐
@@ -82,32 +90,46 @@
 
 ## 🌟 Core Distributed Systems Patterns
 
-1. **Request Idempotency & Deduplication**:
+1. **Reliable Queue Pattern (`BRPOPLPUSH`)**:
+   - Plain popping (`RPOP`) risks permanent message loss if a worker process crashes after popping before completing or updating the database.
+   - TaskFlow employs Redis `BRPOPLPUSH` (blocking pop from `jobs:queue:active` and push to `jobs:queue:processing:<workerId>`).
+   - If a worker terminates unexpectedly, the job remains safely recorded in its processing list.
+   - Upon successful completion, failure, or rescheduling, the worker removes the job ID from its processing queue in a guaranteed `finally` block.
+
+2. **Request Idempotency & Deduplication**:
    - Enforced via Redis `SETNX` on key `idemp:<idempotency_key>` with a 24-hour safety-net TTL.
    - The idempotency key is explicitly released/deleted only when the job reaches a terminal state (`COMPLETED` or `FAILED`/DLQ), ensuring jobs retrying with exponential backoff remain strictly deduplicated while in-flight.
    - Prevents duplicate job execution when client networks retry or drop connections.
 
-2. **Bounded Concurrency & Backpressure**:
+3. **Pluggable Task Execution (`TaskHandlerRegistry`)**:
+   - Replaces monolithic execution with a clean `TaskHandler` interface and dynamic registry.
+   - Includes real execution implementations:
+     - `FileExportTaskHandler`: Generates real file artifacts on disk (`FILE_EXPORT`).
+     - `HttpWebhookTaskHandler`: Executes outbound HTTP POST calls with configurable timeouts (`WEBHOOK`).
+     - `SimulationTaskHandler`: Provides failure simulation for load and resilience testing (`SIMULATION`).
+
+4. **Atomic Watchdog Recovery (Compare-And-Swap Fencing)**:
+   - Detects worker nodes that crashed or froze mid-execution (`JobStatus.RUNNING` older than lease timeout, default 300s) as well as jobs stuck in worker processing queues (`jobs:queue:processing:*`).
+   - Uses an atomic SQL compare-and-swap update (`WHERE id = :id AND leaseVersion = :expectedVersion`) in a single transactional write, completely eliminating the race condition window between status scans and lease bumps.
+   - Re-queues recovered jobs to `jobs:queue:active` with incremented retry count and lease fencing tokens, or routes them to DLQ if max retries are exceeded.
+
+5. **Bounded Concurrency & Backpressure**:
    - Backed by a custom `ThreadPoolExecutor` with a bounded `ArrayBlockingQueue(100)`.
    - Utilizes `ThreadPoolExecutor.CallerRunsPolicy` to slow down upstream producers when internal worker threads are saturated.
 
-3. **Delayed & Scheduled Task Queuing**:
+6. **Delayed & Scheduled Task Queuing**:
    - Future jobs are scheduled into a Redis Sorted Set (`jobs:queue:delayed`) using `epoch_timestamp_ms` as the score.
    - An atomic Lua script promotes mature delayed jobs into `jobs:queue:active` every 500ms without race conditions.
 
-4. **Exponential Backoff Retries**:
+7. **Exponential Backoff Retries**:
    - When a job encounters transient execution errors, it is not retried immediately.
    - Delay increases exponentially ($2^{\text{retryCount}}$ seconds, capped at 300s) and is scheduled in the Redis delayed queue.
 
-5. **Watchdog Orphaned/Stuck Job Recovery**:
-   - Detects worker nodes that crashed or froze mid-execution (`JobStatus.RUNNING` older than lease threshold, default 300s).
-   - Re-queues the orphaned job for execution or pushes it to DLQ if max retries are exhausted.
-
-6. **Dead Letter Queue (DLQ) & Admin Replay**:
+8. **Dead Letter Queue (DLQ) & Admin Replay**:
    - Poison-pill jobs exceeding max retries are routed to `jobs:queue:dlq` and marked as `FAILED`.
    - Provides admin endpoints to inspect DLQ payloads and replay failed tasks with a clean state.
 
-7. **Role-Based API Security (RBAC) & Input Validation**:
+9. **Role-Based API Security (RBAC) & Input Validation**:
    - Enforces Jakarta Bean Validation (`@NotBlank`, `@Size`, `@Positive`, `@Pattern`) on payload DTOs with centralized error sanitization.
    - Restricts `taskType` to alphanumeric characters, underscores, and hyphens (`^[A-Za-z0-9_-]+$`) as defense-in-depth against injection attacks.
    - Protected with a stateless `X-API-KEY` header filter using constant-time verification (`MessageDigest.isEqual`).
@@ -123,10 +145,19 @@
 - **Java 17+** (JDK 17 or JDK 21/22)
 - **Docker & Docker Compose**
 
-### 2. Start PostgreSQL & Redis Containers
-Run the provided `docker-compose.yml` to spin up local database and cache instances:
+### 2. Run with Docker Compose
+
+#### Option A: Run the Complete Stack (App + Postgres + Redis)
+The multi-stage `Dockerfile` packages the Spring Boot application into a lightweight, non-root Alpine container:
 ```bash
-docker-compose up -d
+docker compose up --build -d
+```
+This builds the Spring Boot app and boots Postgres 15, Redis 7, and the TaskFlow engine with automatic service healthchecks. The API is immediately accessible at `http://localhost:8080`.
+
+#### Option B: Run Infrastructure Only (For Local Development)
+To run the database and cache while developing the application in your IDE:
+```bash
+docker compose up -d postgres redis
 ```
 This starts:
 - **PostgreSQL 15** on `localhost:5433` (database: `taskdb`, user: `postgres`, password: `password`)
@@ -402,6 +433,30 @@ Run the included load simulator to fire 200 concurrent tasks (with a simulated f
 
 ---
 
+## ⚠️ Known Limitations & Future Work
+
+While this engine implements battle-tested patterns for resilient background task processing, it is deliberately scoped as an **in-depth portfolio and learning project** rather than a full enterprise distributed workflow orchestrator. Key limitations include:
+
+1. **Single-Node Service Instance (No Multi-Instance Coordination / Leader Election)**:
+   - The application is currently designed to run as a single coordinator/service node.
+   - While Redis and PostgreSQL easily handle multi-client connections, the `@Scheduled` background loops (promoting delayed tasks every 500ms and running the stuck-job watchdog scan) have no cluster leader election mechanism (such as ShedLock, Raft, or a distributed Redis lock like Redlock).
+   - If multiple application instances run concurrently against the same Redis and PostgreSQL databases, they will duplicate delayed queue promotion sweeps and run concurrent watchdog scans (though atomic compare-and-swap SQL updates protect against data corruption).
+   
+2. **In-Process Pluggable Task Handlers (Not a Distributed Worker Mesh)**:
+   - Task execution is dispatched in-process using the `TaskHandler` interface and `TaskHandlerRegistry`. Included handlers demonstrate real operations (such as disk file generation via `FileExportTaskHandler`, outbound HTTP calls via `HttpWebhookTaskHandler`, and failure injection via `SimulationTaskHandler`).
+   - It is not a distributed remote execution mesh (like Temporal, Apache Airflow, or Celery workers executing on separate worker machines over RPC). Tasks run within the local JVM's `workerThreadPool`.
+
+3. **No Dynamic Worker Heartbeating**:
+   - The watchdog identifies stuck jobs using timestamps (`updatedAt` older than timeout) rather than active streaming heartbeat pulses from workers.
+   - If a long-running task legitimately takes longer than `app.worker.stuck-timeout-seconds`, the watchdog could flag it as orphaned unless the timeout is configured appropriately for the workload.
+
+4. **Future Roadmap**:
+   - **Distributed Leader Election**: Incorporate ShedLock or Redis distributed lock for `@Scheduled` cron jobs to enable active-active multi-node application deployment.
+   - **OpenTelemetry & Prometheus Export**: Expose Micrometer metrics for Prometheus scraping and Grafana dashboard visualization.
+   - **Remote Worker Execution**: Decouple ingestion/scheduling from worker execution via gRPC or message brokers.
+
+---
+
 ## 📌 Portfolio & Architecture Note
 
-> **Note**: This project is built as a portfolio and educational system showcasing how to architect resilient distributed background workers in Java/Spring Boot without relying solely on heavyweight external orchestrators. It demonstrates concrete implementations of idempotency keys, Redis data structures (Lists, Sorted Sets), Lua scripts for atomic queue manipulation, thread pool bounded buffer backpressure, fault recovery watchdogs, and Dead Letter Queue management.
+> **Note**: This project is built as a portfolio and educational system showcasing how to architect resilient asynchronous background workers in Java/Spring Boot without relying solely on heavyweight external orchestrators. It demonstrates concrete implementations of idempotency keys, Redis reliable queuing (`BRPOPLPUSH`), atomic Lua scripts for delayed queue manipulation, thread pool bounded buffer backpressure, atomic watchdog crash recovery, and Dead Letter Queue management.

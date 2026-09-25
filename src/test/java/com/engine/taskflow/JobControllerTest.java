@@ -111,7 +111,7 @@ public class JobControllerTest {
         void shouldReturnBadRequestWhenTaskTypeIsBlank() throws Exception {
                 String idempotencyKey = "key-invalid-blank";
                 SubmitJobRequest request = SubmitJobRequest.builder()
-                                .taskType("") // Blank taskType violates @NotBlank
+                                .taskType("")
                                 .payload("{\"test\":true}")
                                 .build();
 
@@ -128,7 +128,7 @@ public class JobControllerTest {
         void shouldReturnBadRequestWhenTaskTypeContainsInvalidCharacters() throws Exception {
                 String idempotencyKey = "key-invalid-tasktype-chars";
                 SubmitJobRequest request = SubmitJobRequest.builder()
-                                .taskType("<script>alert(1)</script>") // Contains invalid characters violating @Pattern
+                                .taskType("<script>alert(1)</script>")
                                 .payload("{\"test\":true}")
                                 .build();
 
@@ -147,7 +147,7 @@ public class JobControllerTest {
                 SubmitJobRequest request = SubmitJobRequest.builder()
                                 .taskType("DATA_SYNC")
                                 .payload("{\"test\":true}")
-                                .delayInSeconds(-5L) // Negative delay violates @Positive
+                                .delayInSeconds(-5L)
                                 .build();
 
                 mockMvc.perform(post("/api/v1/jobs/submit")
@@ -263,7 +263,6 @@ public class JobControllerTest {
                                 .build();
 
                 Page<JobRecord> page = new PageImpl<>(List.of(r1), PageRequest.of(0, 20), 1);
-                // page=-1 is clamped to 0, size=0 or negative is clamped to 20
                 when(taskService.getRecentJobs(eq(PageRequest.of(0, 20)))).thenReturn(page);
 
                 mockMvc.perform(get("/api/v1/jobs/recent?page=-1&size=0"))
@@ -303,8 +302,6 @@ public class JobControllerTest {
                                 .retryCount(3)
                                 .build();
 
-                // 11 total elements with pageSize 5: Page 0 (5), Page 1 (5), Page 2 (1 item,
-                // index 2)
                 Page<JobRecord> page = new PageImpl<>(List.of(dlqJob), PageRequest.of(2, 5), 11);
                 when(taskService.getDlqJobs(eq(PageRequest.of(2, 5)))).thenReturn(page);
 

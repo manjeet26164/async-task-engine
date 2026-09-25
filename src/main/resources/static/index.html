@@ -494,10 +494,8 @@
             }
         }
 
-        // Initialize Form
         loadPreset('IMAGE_PROCESSING');
 
-        // Chart.js Setup
         const maxDataPoints = 30;
         const labels = Array(maxDataPoints).fill('');
         const activeQueueData = Array(maxDataPoints).fill(0);
@@ -582,9 +580,7 @@
             }
         });
 
-        // =========================================================================
-        // API Key Management (Stored in localStorage for persistence)
-        // =========================================================================
+        // API Key Management
         const STORAGE_KEY = 'taskflow_api_key';
 
         function getApiKey() {
@@ -670,7 +666,6 @@
             }
         }
 
-        // Initialize API Key on page load
         document.addEventListener('DOMContentLoaded', () => {
             updateApiKeyUI();
             const input = document.getElementById('apiKeyInput');
@@ -703,7 +698,6 @@
                 if (!res.ok) return;
                 const m = await res.json();
 
-                // Update Stat Cards
                 document.getElementById('statActiveQueue').innerText = m.activeRedisQueueLength;
                 document.getElementById('statDelayedQueue').innerText = m.delayedRedisQueueLength;
                 document.getElementById('statActiveThreads').innerText = m.activeThreads;
@@ -714,7 +708,6 @@
                 document.getElementById('statDlq').innerText = m.dlqRedisQueueLength;
                 document.getElementById('statFailed').innerText = m.failedJobsCount;
 
-                // Push to Chart
                 const now = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
                 labels.push(now);
                 if (labels.length > maxDataPoints) labels.shift();
@@ -829,7 +822,6 @@
                 if (!res.ok) return;
                 const data = await res.json();
 
-                // Unpack Spring Page<T> format: { content: [...], totalPages: N, totalElements: M, number: P }
                 let jobs = [];
                 if (Array.isArray(data)) {
                     jobs = data;
@@ -1076,7 +1068,6 @@
             }
         }, 2000);
 
-        // Initial fetch
         fetchMetrics();
         fetchRecentJobs();
     </script>

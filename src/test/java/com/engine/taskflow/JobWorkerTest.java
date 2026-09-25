@@ -116,7 +116,6 @@ public class JobWorkerTest {
         assertEquals(JobStatus.SCHEDULED, statusTransitions.get(1));
         assertEquals(1, jobRecord.getRetryCount());
 
-        // Exponential backoff for retry 1: 2^1 = 2 seconds
         verify(zSetOperations).add(eq(JobWorker.DELAYED_QUEUE_KEY), eq(jobId), anyDouble());
         verifyNoInteractions(listOperations);
         verify(stringRedisTemplate, never()).delete(anyString());
@@ -172,7 +171,8 @@ public class JobWorkerTest {
 
         when(jobRepository.findByStatusAndUpdatedAtBefore(eq(JobStatus.RUNNING), any(LocalDateTime.class)))
                 .thenReturn(List.of(stuckJob));
-        when(jobRepository.findById("stuck-job-1")).thenReturn(Optional.of(stuckJob));
+        when(jobRepository.updateLeaseAndStatusIfVersionMatches(eq("stuck-job-1"), eq(1), eq(JobStatus.QUEUED), eq(2), eq(1), any(LocalDateTime.class)))
+                .thenReturn(1);
         when(stringRedisTemplate.opsForList()).thenReturn(listOperations);
 
         jobWorker.recoverStuckJobs();
@@ -180,7 +180,7 @@ public class JobWorkerTest {
         assertEquals(1, stuckJob.getRetryCount());
         assertEquals(JobStatus.QUEUED, stuckJob.getStatus());
         assertEquals(2, stuckJob.getLeaseVersion());
-        verify(jobRepository).save(stuckJob);
+        verify(jobRepository).updateLeaseAndStatusIfVersionMatches(eq("stuck-job-1"), eq(1), eq(JobStatus.QUEUED), eq(2), eq(1), any(LocalDateTime.class));
         verify(listOperations).leftPush(JobWorker.ACTIVE_QUEUE_KEY, "stuck-job-1");
     }
 
@@ -198,7 +198,8 @@ public class JobWorkerTest {
 
         when(jobRepository.findByStatusAndUpdatedAtBefore(eq(JobStatus.RUNNING), any(LocalDateTime.class)))
                 .thenReturn(List.of(stuckJob));
-        when(jobRepository.findById("stuck-job-max")).thenReturn(Optional.of(stuckJob));
+        when(jobRepository.updateLeaseAndStatusIfVersionMatches(eq("stuck-job-max"), eq(1), eq(JobStatus.FAILED), eq(2), eq(3), any(LocalDateTime.class)))
+                .thenReturn(1);
         when(stringRedisTemplate.opsForList()).thenReturn(listOperations);
 
         jobWorker.recoverStuckJobs();
@@ -206,7 +207,7 @@ public class JobWorkerTest {
         assertEquals(3, stuckJob.getRetryCount());
         assertEquals(JobStatus.FAILED, stuckJob.getStatus());
         assertEquals(2, stuckJob.getLeaseVersion());
-        verify(jobRepository).save(stuckJob);
+        verify(jobRepository).updateLeaseAndStatusIfVersionMatches(eq("stuck-job-max"), eq(1), eq(JobStatus.FAILED), eq(2), eq(3), any(LocalDateTime.class));
         verify(listOperations).leftPush(JobWorker.DLQ_KEY, "stuck-job-max");
     }
 
@@ -235,7 +236,6 @@ public class JobWorkerTest {
                 .leaseVersion(0)
                 .build();
 
-        // 1st attempt returns empty (simulating replication lag/race condition), subsequent attempts return record
         when(jobRepository.findById(jobId))
                 .thenReturn(Optional.empty())
                 .thenReturn(Optional.of(jobRecord));
@@ -244,9 +244,7 @@ public class JobWorkerTest {
 
         jobWorker.processJob(jobId);
 
-        // Verify findById was called 3 times (2 in retry loop + 1 before completion check)
         verify(jobRepository, times(3)).findById(jobId);
-        // Verify job completed rather than being silently dropped
         assertEquals(JobStatus.COMPLETED, jobRecord.getStatus());
         assertEquals(1, jobRecord.getLeaseVersion());
         verify(jobRepository, times(2)).save(jobRecord);
@@ -259,7 +257,6 @@ public class JobWorkerTest {
 
         jobWorker.processJob(jobId);
 
-        // Verify findById was called 3 times before giving up
         verify(jobRepository, times(3)).findById(jobId);
         verify(jobRepository, never()).save(any(JobRecord.class));
         verifyNoInteractions(stringRedisTemplate);
@@ -303,7 +300,6 @@ public class JobWorkerTest {
                 .workerId(null)
                 .build();
 
-        // Simulate watchdog or another worker reclaiming and updating lease to 3 in DB while this worker was processing
         JobRecord supersededJobInDb = JobRecord.builder()
                 .id(jobId)
                 .idempotencyKey("idemp-superseded")
@@ -314,8 +310,6 @@ public class JobWorkerTest {
                 .workerId("other-worker")
                 .build();
 
-        // 1st call (start of processJob) returns initialJob (worker will set leaseVersion to 2)
-        // 2nd call (before writing COMPLETED) returns supersededJobInDb with leaseVersion 3
         when(jobRepository.findById(jobId))
                 .thenReturn(Optional.of(initialJob))
                 .thenReturn(Optional.of(supersededJobInDb));
@@ -324,9 +318,7 @@ public class JobWorkerTest {
 
         jobWorker.processJob(jobId);
 
-        // Worker should have saved RUNNING on start (1 time)
         verify(jobRepository, times(1)).save(initialJob);
-        // Worker must NOT save supersededJobInDb as COMPLETED!
         verify(jobRepository, never()).save(supersededJobInDb);
         assertEquals(JobStatus.QUEUED, supersededJobInDb.getStatus());
         assertEquals(3, supersededJobInDb.getLeaseVersion());
@@ -361,11 +353,10 @@ public class JobWorkerTest {
 
         jobWorker.processJob(jobId);
 
-        // Initial save for RUNNING happened
         verify(jobRepository, times(1)).save(initialJob);
-        // But failure save (FAILED/SCHEDULED) and Redis DLQ push were skipped
         verify(jobRepository, never()).save(supersededJobInDb);
-        verifyNoInteractions(stringRedisTemplate);
+        verify(stringRedisTemplate, never()).delete(anyString());
+        verify(stringRedisTemplate, never()).opsForZSet();
     }
 
     @Test
@@ -379,22 +370,16 @@ public class JobWorkerTest {
                 .updatedAt(LocalDateTime.now().minusMinutes(10))
                 .build();
 
-        JobRecord alreadyRecoveredJob = JobRecord.builder()
-                .id("stuck-superseded")
-                .taskType("PAYMENT")
-                .status(JobStatus.RUNNING)
-                .retryCount(0)
-                .leaseVersion(2) // already bumped by another node
-                .build();
-
         when(jobRepository.findByStatusAndUpdatedAtBefore(eq(JobStatus.RUNNING), any(LocalDateTime.class)))
                 .thenReturn(List.of(stuckJob));
-        when(jobRepository.findById("stuck-superseded")).thenReturn(Optional.of(alreadyRecoveredJob));
+        when(jobRepository.updateLeaseAndStatusIfVersionMatches(eq("stuck-superseded"), eq(1), any(), anyInt(), anyInt(), any()))
+                .thenReturn(0);
 
         jobWorker.recoverStuckJobs();
 
         verify(jobRepository, never()).save(any(JobRecord.class));
-        verifyNoInteractions(stringRedisTemplate);
+        verify(listOperations, never()).leftPush(anyString(), anyString());
+        verify(stringRedisTemplate, never()).delete(anyString());
     }
 
     @Test
@@ -416,24 +401,19 @@ public class JobWorkerTest {
         when(stringRedisTemplate.opsForZSet()).thenReturn(zSetOperations);
         when(stringRedisTemplate.opsForList()).thenReturn(listOperations);
 
-        // 1. First execution attempt (fails -> status becomes SCHEDULED, retry 1/3)
         jobWorker.processJob(jobId);
         assertEquals(JobStatus.SCHEDULED, jobRecord.getStatus());
         assertEquals(1, jobRecord.getRetryCount());
-        // Verify idempotency key was NOT deleted
         verify(stringRedisTemplate, never()).delete("idemp:lifecycle-key-1");
 
-        // 2. Second execution attempt (fails -> status becomes SCHEDULED, retry 2/3)
         jobWorker.processJob(jobId);
         assertEquals(JobStatus.SCHEDULED, jobRecord.getStatus());
         assertEquals(2, jobRecord.getRetryCount());
         verify(stringRedisTemplate, never()).delete("idemp:lifecycle-key-1");
 
-        // 3. Third execution attempt (fails -> reaches max retries, status becomes FAILED and routes to DLQ)
         jobWorker.processJob(jobId);
         assertEquals(JobStatus.FAILED, jobRecord.getStatus());
         assertEquals(3, jobRecord.getRetryCount());
-        // Verify idempotency key WAS deleted upon reaching terminal FAILED state
         verify(stringRedisTemplate).delete("idemp:lifecycle-key-1");
     }
 
@@ -525,14 +505,12 @@ public class JobWorkerTest {
                 .build();
 
         when(jobRepository.findById(jobId)).thenReturn(Optional.of(jobRecord));
-        // First save (claim lease) succeeds, second save (completion) encounters optimistic lock failure
         when(jobRepository.save(any(JobRecord.class)))
                 .thenReturn(jobRecord)
                 .thenThrow(new ObjectOptimisticLockingFailureException(JobRecord.class, jobId));
 
         assertDoesNotThrow(() -> jobWorker.processJob(jobId));
 
-        // Verify idempotency key was NOT deleted because completion was aborted
         verify(stringRedisTemplate, never()).delete("idemp:idemp-conflict-1");
     }
 
@@ -551,13 +529,38 @@ public class JobWorkerTest {
 
         when(jobRepository.findByStatusAndUpdatedAtBefore(eq(JobStatus.RUNNING), any(LocalDateTime.class)))
                 .thenReturn(List.of(jobRecord));
-        when(jobRepository.findById(jobId)).thenReturn(Optional.of(jobRecord));
-        when(jobRepository.save(any(JobRecord.class)))
-                .thenThrow(new ObjectOptimisticLockingFailureException(JobRecord.class, jobId));
+        when(jobRepository.updateLeaseAndStatusIfVersionMatches(eq(jobId), eq(1), any(), anyInt(), anyInt(), any()))
+                .thenReturn(0);
 
         assertDoesNotThrow(() -> jobWorker.recoverStuckJobs());
 
-        // Verify active queue push did not occur due to lock collision
         verify(listOperations, never()).leftPush(anyString(), anyString());
+    }
+
+    @Test
+    void shouldDispatchToRegisteredTaskHandlerWhenAvailable() throws Exception {
+        String jobId = "job-custom-handler";
+        JobRecord jobRecord = JobRecord.builder()
+                .id(jobId)
+                .idempotencyKey("idemp-custom-handler")
+                .taskType("CUSTOM_DISPATCH")
+                .payload("{\"test\": true}")
+                .status(JobStatus.QUEUED)
+                .leaseVersion(0)
+                .build();
+
+        com.engine.taskflow.handler.TaskHandler mockHandler = mock(com.engine.taskflow.handler.TaskHandler.class);
+        when(mockHandler.getTaskType()).thenReturn("CUSTOM_DISPATCH");
+
+        jobWorker.getTaskHandlerRegistry().register(mockHandler);
+
+        when(jobRepository.findById(jobId)).thenReturn(Optional.of(jobRecord));
+        when(jobRepository.save(any(JobRecord.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        jobWorker.processJob(jobId);
+
+        verify(mockHandler).execute(jobRecord);
+        assertEquals(JobStatus.COMPLETED, jobRecord.getStatus());
+        verify(stringRedisTemplate).delete("idemp:idemp-custom-handler");
     }
 }

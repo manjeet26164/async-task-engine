@@ -1,8 +1,4 @@
-# ==============================================================================
-# TaskFlow Engine - Configuration Template (Safe for Version Control)
 # Copy this file to application.properties or application-local.properties
-# ==============================================================================
-
 spring.application.name=distributed-task-engine
 
 # PostgreSQL Configuration

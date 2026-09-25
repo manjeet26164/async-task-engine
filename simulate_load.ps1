@@ -1,9 +1,3 @@
-# ==============================================================================
-# TaskFlow High-Concurrency Load Simulation Script (PowerShell)
-# Spawns 200 concurrent HTTP POST requests to /api/v1/jobs/submit
-# Demonstrates Thread Pool saturation, Redis Queue buffering & CallerRuns backpressure
-# ==============================================================================
-
 param(
     [string]$TargetUrl = "http://localhost:8080/api/v1/jobs/submit",
     [string]$ApiKey = "taskflow-secret-key-2026",

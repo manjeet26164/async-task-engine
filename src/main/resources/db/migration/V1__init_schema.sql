@@ -1,8 +1,3 @@
--- ==============================================================================
--- Flyway Database Migration: V1__init_schema.sql
--- Recreates the job_records table schema with lease management & idempotency support
--- ==============================================================================
-
 CREATE TABLE IF NOT EXISTS job_records (
     id VARCHAR(36) NOT NULL PRIMARY KEY,
     idempotency_key VARCHAR(255) NOT NULL,

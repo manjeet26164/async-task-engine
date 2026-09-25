@@ -1,0 +1,7 @@
+target/
+.git/
+.gitignore
+.vscode/
+*.md
+*.ps1
+*.sh

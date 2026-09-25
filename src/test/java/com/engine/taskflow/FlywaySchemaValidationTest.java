@@ -77,7 +77,6 @@ public class FlywaySchemaValidationTest {
 
         jobRepository.saveAndFlush(job);
 
-        // Fetch two distinct entity copies representing two concurrent transactions / threads
         JobRecord thread1Copy = entityManager.find(JobRecord.class, job.getId());
         entityManager.detach(thread1Copy);
 
@@ -87,11 +86,9 @@ public class FlywaySchemaValidationTest {
         assertEquals(0, thread1Copy.getOptimisticVersion());
         assertEquals(0, thread2Copy.getOptimisticVersion());
 
-        // Thread 1 updates status and saves successfully (optimistic_version increments to 1)
         thread1Copy.setStatus(JobStatus.RUNNING);
         jobRepository.saveAndFlush(thread1Copy);
 
-        // Thread 2 attempts to save with stale optimistic_version (0 instead of 1) -> must fail
         thread2Copy.setStatus(JobStatus.COMPLETED);
         assertThrows(ObjectOptimisticLockingFailureException.class, () -> {
             jobRepository.saveAndFlush(thread2Copy);
